@@ -1,11 +1,12 @@
 [package]
 name = "ngtool"
-version = "0.1.0"
+version = "1.0.2"
 edition = "2021"
 rust-version = "1.75"
 description = "Nginx-Tools TUI - 交互式 Nginx 站点管理工具"
 license = "MIT"
 publish = false
+build = "build.rs"
 
 [[bin]]
 name = "ngtool"

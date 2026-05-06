@@ -2,8 +2,8 @@ name: release
 
 # 触发：仅在推送 tag 时构建并发布 TUI 二进制
 # 用法：
-#   git tag v0.1.0
-#   git push origin v0.1.0
+#   git tag v1.0.2
+#   git push origin v1.0.2
 on:
   push:
     tags:
@@ -69,6 +69,7 @@ jobs:
       - name: Build release binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+          NGTOOL_BUILD_VERSION: ${{ github.event.inputs.tag || github.ref_name }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Stage artifact

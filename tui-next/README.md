@@ -35,7 +35,7 @@ cargo build --release            # 产物 target/release/ngtool
 ./target/release/ngtool          # 默认进入仪表盘
 ./target/release/ngtool --readonly        # 强制只读模式
 ./target/release/ngtool --config /path/to/config.toml
-./target/release/ngtool --version
+./target/release/ngtool --version   # 若当前 HEAD 正好落在某个 tag，上面会显示该 tag 版本
 ```
 
 OrangePi (aarch64) 与常见 x86_64 Linux 直接 native 编译即可。
@@ -50,6 +50,12 @@ OrangePi (aarch64) 与常见 x86_64 Linux 直接 native 编译即可。
 ```bash
 sudo bash install.sh update
 ```
+
+`ngtool --version`、更新检查里的“当前版本”、以及备份 manifest 里的 `ngtool_version`
+都使用同一个构建时版本号：
+
+- 在 tag 上本地构建时，自动读取当前 Git tag
+- 在非 tag 开发构建时，回退到 `Cargo.toml` 的 package version
 
 ## 快捷键速查
 

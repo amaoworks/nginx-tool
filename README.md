@@ -58,7 +58,7 @@ Nginx-Tools/
 ### 一键安装（交互式选择）
 
 ```bash
-# 远程执行（推荐）—— 启动后交互选择 shell / tui
+# 远程执行（推荐）—— 先检测当前安装状态，再进入安装/更新/卸载菜单
 bash <(curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh)
 
 # 或通过管道执行
@@ -118,6 +118,7 @@ curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.s
 
 #### 管理脚本
 
+- ✅ 默认无参数执行时会先检测当前安装状态，再进入安装/更新/卸载菜单
 - ✅ `status`：检测当前是否已安装 Shell / TUI 版，并显示版本/更新状态
 - ✅ `update`：更新已安装的 Shell 仓库与 TUI 二进制
 - ✅ `uninstall`：自动检测已安装组件并卸载
@@ -213,7 +214,7 @@ ngmon                            # 输出 Nginx 运行状态仪表盘
 ```bash
 ngtool                       # 进入仪表盘
 ngtool --readonly            # 强制只读模式
-ngtool --version             # 查看版本
+ngtool --version             # 查看版本（Release 构建时跟随 Git tag）
 ngtool --help                # 命令行参数
 ```
 
@@ -349,13 +350,16 @@ ng new mysite mysite.example.com / --type static --enable --cert
 
 ```bash
 # 本地打 tag 并推送，CI 会自动构建并发布
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.2
+git push origin v1.0.2
 ```
 
 `install.sh` 在 `tui` / `status` / `update` 相关流程里会调用
 `https://api.github.com/repos/amaoworks/nginx-tool/releases/latest`，
 解析出与当前架构匹配的 asset，用于检测或安装 `/usr/local/bin/ngtool`。
+
+TUI 的 `--version` 与界面内版本检查使用统一的构建版本号：
+本地在某个 tag 上构建时会自动读取该 tag；CI Release 构建时也会显式注入对应 tag 版本。
 
 ---
 

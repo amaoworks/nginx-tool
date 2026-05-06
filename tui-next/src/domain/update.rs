@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 use crate::error::NgToolError;
+use crate::version::APP_VERSION;
 
 const REPO_SLUG: &str = "amaoworks/nginx-tool";
 const RELEASE_API: &str = "https://api.github.com/repos/amaoworks/nginx-tool/releases/latest";
@@ -24,7 +25,7 @@ struct LatestRelease {
 
 pub async fn check_latest_release() -> Result<UpdateInfo, NgToolError> {
     let client = reqwest::Client::builder()
-        .user_agent(format!("ngtool/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("ngtool/{}", APP_VERSION))
         .build()
         .map_err(http_error)?;
 
@@ -40,7 +41,7 @@ pub async fn check_latest_release() -> Result<UpdateInfo, NgToolError> {
         .await
         .map_err(http_error)?;
 
-    let current_raw = env!("CARGO_PKG_VERSION");
+    let current_raw = APP_VERSION;
     let current_norm = normalize_version(current_raw);
     let latest_norm = normalize_version(&release.tag_name);
 

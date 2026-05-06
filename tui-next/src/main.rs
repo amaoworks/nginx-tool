@@ -22,6 +22,7 @@ mod error;
 mod infra;
 mod template;
 mod ui;
+mod version;
 
 use crate::app::event::AppEvent;
 use crate::app::state::AppState;
@@ -32,7 +33,7 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 #[derive(Debug, Parser)]
 #[command(
     name = "ngtool",
-    version,
+    version = crate::version::APP_VERSION,
     about = "Nginx-Tools TUI - 交互式 Nginx 站点管理工具",
     disable_help_subcommand = true
 )]

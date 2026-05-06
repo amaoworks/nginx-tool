@@ -289,7 +289,7 @@ pub async fn create_backup(
             created_at: now.to_rfc3339(),
             hostname,
             nginx_version,
-            ngtool_version: env!("CARGO_PKG_VERSION").to_string(),
+            ngtool_version: crate::version::APP_VERSION.to_string(),
             source,
             scope: ManifestScope {
                 nginx_conf: has_nginx_conf,

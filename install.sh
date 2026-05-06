@@ -4,7 +4,7 @@
 # Nginx-Tools 安装 / 更新 / 卸载脚本
 # 支持: Debian / Ubuntu  (x86_64 / aarch64)
 # 用法:
-#   bash install.sh                # 交互式选择 shell / tui
+#   bash install.sh                # 检测状态后进入管理菜单
 #   bash install.sh shell          # 安装 Shell 版（Bash 脚本）
 #   bash install.sh tui            # 安装 TUI 版（ngtool 二进制）
 #   bash install.sh status         # 检测当前安装状态 / 最新版本
@@ -12,7 +12,7 @@
 #   bash install.sh uninstall      # 卸载（自动检测已安装组件）
 #
 #   # 远程执行
-#   curl -fsSL <URL> | bash                      # 交互安装
+#   curl -fsSL <URL> | bash                      # 检测状态后进入管理菜单
 #   curl -fsSL <URL> | bash -s -- shell          # 远程安装 Shell
 #   curl -fsSL <URL> | bash -s -- tui            # 远程安装 TUI
 #   curl -fsSL <URL> | bash -s -- status         # 检测安装状态
@@ -396,6 +396,49 @@ choose_mode() {
     done
 
     success "已选择: ${BOLD}${MODE}${NC} 模式"
+}
+
+choose_default_action() {
+    show_status
+    echo -e "${BOLD}  🎛️  请选择操作${NC}"
+    echo ""
+    echo -e "    ${CYAN}1)${NC} ${BOLD}安装${NC}   ${DIM}— 安装 Shell 或 TUI${NC}"
+    echo -e "    ${CYAN}2)${NC} ${BOLD}更新${NC}   ${DIM}— 更新已安装组件${NC}"
+    echo -e "    ${CYAN}3)${NC} ${BOLD}卸载${NC}   ${DIM}— 卸载已安装组件${NC}"
+    echo -e "    ${CYAN}4)${NC} ${BOLD}状态${NC}   ${DIM}— 详细检测安装状态与最新版本${NC}"
+    echo -e "    ${CYAN}5)${NC} ${BOLD}退出${NC}"
+    echo ""
+
+    local choice
+    while true; do
+        ask_line "  输入序号 [1/2/3/4/5]（默认 1）: " choice
+        choice="${choice:-1}"
+        case "$choice" in
+            1|install|i|I)
+                choose_mode
+                return 0
+                ;;
+            2|update|u|U)
+                do_update
+                exit 0
+                ;;
+            3|uninstall|remove|r|R)
+                do_uninstall
+                exit 0
+                ;;
+            4|status|s|S)
+                show_status
+                exit 0
+                ;;
+            5|quit|q|Q|exit)
+                info "已退出"
+                exit 0
+                ;;
+            *)
+                warn "无效输入: $choice，请重试"
+                ;;
+        esac
+    done
 }
 
 # ============================================================
@@ -853,7 +896,7 @@ usage() {
 用法: bash install.sh [命令]
 
 命令:
-  （无参数）      交互式选择 shell / tui 安装模式（默认）
+  （无参数）      先检测安装状态，再进入安装 / 更新 / 卸载菜单（默认）
   shell           安装 Shell 版（Bash 脚本 + ng / ngmon 别名）
   tui             安装 TUI 版（ngtool 二进制 → /usr/local/bin/ngtool）
   status          检测当前安装状态与最新版本
@@ -875,7 +918,7 @@ MODE=""
 
 case "${1:-}" in
     ""|install)
-        choose_mode
+        choose_default_action
         ;;
     shell)
         MODE="shell"
