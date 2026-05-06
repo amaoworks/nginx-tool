@@ -1,0 +1,100 @@
+name: release
+
+# 触发：仅在推送 tag 时构建并发布 TUI 二进制
+# 用法：
+#   git tag v0.1.0
+#   git push origin v0.1.0
+on:
+  push:
+    tags:
+      - 'v*'
+  # 允许在 Actions 页面手动触发（仅用于调试，需手填一个已存在的 tag）
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建的 tag（例如 v0.1.0）'
+        required: true
+
+permissions:
+  contents: write   # 创建 / 更新 Release 与上传 asset
+
+jobs:
+  build-tui:
+    name: build ngtool (${{ matrix.arch }})
+    # 选用 22.04，对应 glibc 2.35，可在 Ubuntu 22.04+ / Debian 12+ 上运行
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: tui-next
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+            apt-package: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compile toolchain
+        if: matrix.apt-package != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt-package }}
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tui-next/target
+          key: ${{ runner.os }}-cargo-release-${{ matrix.target }}-${{ hashFiles('tui-next/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-${{ matrix.target }}-
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        id: stage
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          OUT="ngtool-${TAG}-linux-${{ matrix.arch }}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/ngtool" "dist/${OUT}"
+          chmod 0755 "dist/${OUT}"
+          ls -lh "dist/${OUT}"
+          echo "asset_path=tui-next/dist/${OUT}" >> "$GITHUB_OUTPUT"
+          echo "asset_name=${OUT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.asset_name }}
+          path: ${{ steps.stage.outputs.asset_path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ steps.stage.outputs.asset_path }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true

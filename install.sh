@@ -27,9 +27,10 @@ else
     REAL_SHELL="$SHELL"
 fi
 
-REPO_URL="https://git.liyka.qzz.io/Brown/Nginx-Tools.git"
-RELEASE_API="https://git.liyka.qzz.io/api/v1/repos/Brown/Nginx-Tools/releases/latest"
-RELEASE_PAGE="https://git.liyka.qzz.io/Brown/Nginx-Tools/releases/latest"
+REPO_SLUG="amaoworks/nginx-tool"
+REPO_URL="https://github.com/${REPO_SLUG}.git"
+RELEASE_API="https://api.github.com/repos/${REPO_SLUG}/releases/latest"
+RELEASE_PAGE="https://github.com/${REPO_SLUG}/releases/latest"
 INSTALL_DIR="$REAL_HOME/nginx"
 TUI_BIN_PATH="/usr/local/bin/ngtool"
 
@@ -418,10 +419,13 @@ resolve_tui_asset() {
     local asset="ngtool-*-linux-${ARCH}"
     local url=""
 
-    # 优先调用 Forgejo / Gitea 兼容 API
+    # 调用 GitHub Releases API（也兼容 Forgejo / Gitea）
     if command -v curl &>/dev/null; then
         local json
-        json=$(curl -fsSL "$RELEASE_API" 2>/dev/null || true)
+        json=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: nginx-tool-installer" \
+            "$RELEASE_API" 2>/dev/null || true)
         if [ -n "$json" ]; then
             # 用 grep + sed 解析（不依赖 jq）
             url=$(printf '%s' "$json" \
@@ -438,7 +442,7 @@ resolve_tui_asset() {
     fi
 
     if [ -z "$url" ]; then
-        error "无法解析最新发布版本（API 调用失败）"
+        error "无法解析最新发布版本（API 调用失败或暂无 Release）"
         echo -e "     请手动访问: ${CYAN}${RELEASE_PAGE}${NC}"
         exit 1
     fi

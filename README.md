@@ -59,23 +59,23 @@ Nginx-Tools/
 
 ```bash
 # 远程执行（推荐）—— 启动后交互选择 shell / tui
-bash <(curl -fsSL https://git.liyka.qzz.io/Brown/Nginx-Tools/raw/branch/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh)
 
 # 或通过管道执行
-curl -fsSL https://git.liyka.qzz.io/Brown/Nginx-Tools/raw/branch/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash
 ```
 
 ### 直接指定模式
 
 ```bash
 # 只装 Shell 版
-curl -fsSL https://git.liyka.qzz.io/Brown/Nginx-Tools/raw/branch/main/install.sh | bash -s -- shell
+curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- shell
 
 # 只装 TUI 版（自动识别系统架构 amd64 / arm64）
-curl -fsSL https://git.liyka.qzz.io/Brown/Nginx-Tools/raw/branch/main/install.sh | bash -s -- tui
+curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- tui
 
 # 手动克隆后执行
-git clone https://git.liyka.qzz.io/Brown/Nginx-Tools.git ~/nginx
+git clone https://github.com/amaoworks/nginx-tool.git ~/nginx
 sudo bash ~/nginx/install.sh        # 交互式
 sudo bash ~/nginx/install.sh shell  # Shell 版
 sudo bash ~/nginx/install.sh tui    # TUI 版
@@ -96,7 +96,7 @@ sudo bash ~/nginx/install.sh tui    # TUI 版
 #### TUI 版
 
 - ✅ 检测操作系统与 CPU 架构（`x86_64` → `amd64`，`aarch64` → `arm64`）
-- ✅ 自动从 [最新 Release](https://git.liyka.qzz.io/Brown/Nginx-Tools/releases/latest) 下载对应架构的 `ngtool` 二进制
+- ✅ 自动从 [最新 Release](https://github.com/amaoworks/nginx-tool/releases/latest) 下载对应架构的 `ngtool` 二进制
 - ✅ 校验 ELF 文件头后安装到 `/usr/local/bin/ngtool`
 - ✅ 检查 Nginx / Certbot 是否已安装，未安装则提示一键安装
 - ✅ 直接全局可用，无需配置 Shell 别名
@@ -108,7 +108,7 @@ sudo bash ~/nginx/install.sh tui    # TUI 版
 sudo bash ~/nginx/install.sh uninstall
 
 # 远程卸载
-curl -fsSL https://git.liyka.qzz.io/Brown/Nginx-Tools/raw/branch/main/install.sh | bash -s -- uninstall
+curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- uninstall
 ```
 
 卸载脚本会：
@@ -310,6 +310,28 @@ ng new mysite mysite.example.com / --type static --enable --cert
 - TUI 版当前仅提供 **amd64 / arm64** Linux 预编译二进制，其他架构请使用 Shell 版或自行从 `tui-next/` 源码构建
 - Shell 版与 TUI 版可同时安装、互不冲突
 - 建议定期执行 `ng backup`（或 TUI 版的备份功能）保存配置
+
+---
+
+## 📦 Release 与 CI
+
+仓库根的 [`/.github/workflows/release.yml`](.github/workflows/release.yml) 在每次推送 `v*` tag 时自动触发：
+
+- 在 `ubuntu-22.04`（glibc 2.35）上构建 `ngtool` Release 二进制
+- 同时输出 **amd64**（`x86_64-unknown-linux-gnu`）与 **arm64**（`aarch64-unknown-linux-gnu`，cross-compile）
+- 仅产出二进制，不打包压缩文件，命名格式：`ngtool-<tag>-linux-<arch>`
+- 自动创建 / 更新对应 tag 的 GitHub Release，并把二进制作为 asset 上传
+
+发布新版本：
+
+```bash
+# 本地打 tag 并推送，CI 会自动构建并发布
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`install.sh` 在 `tui` 模式下会调用 `https://api.github.com/repos/amaoworks/nginx-tool/releases/latest`
+解析出与当前架构匹配的 asset，下载并安装到 `/usr/local/bin/ngtool`。
 
 ---
 
