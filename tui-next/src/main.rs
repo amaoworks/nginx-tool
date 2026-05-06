@@ -200,6 +200,10 @@ async fn run(terminal: &mut Tui, ctx: Arc<AppContext>) -> anyhow::Result<()> {
                         let r = domain::service::status(&ctx_clone).await;
                         let _ = tx_clone.send(AppEvent::ServiceStatusResult(Box::new(r)));
                     }
+                    ServiceButton::CheckUpdate => {
+                        let r = domain::update::check_latest_release().await;
+                        let _ = tx_clone.send(AppEvent::ServiceUpdateCheckResult(Box::new(r)));
+                    }
                 }
             });
         }

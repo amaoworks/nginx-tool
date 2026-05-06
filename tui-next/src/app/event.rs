@@ -4,6 +4,7 @@ use crate::domain::backup::{Backup, RestoreOutcome};
 use crate::domain::cert::CertsSnapshot;
 use crate::domain::dashboard::DashboardSnapshot;
 use crate::domain::site::{CreateSiteOutcome, Site};
+use crate::domain::update::UpdateInfo;
 use crate::error::NgToolError;
 
 /// 应用层统一事件，详见 architecture.md §8.2。
@@ -51,6 +52,9 @@ pub enum AppEvent {
 
     /// 服务控制：状态查询完成
     ServiceStatusResult(Box<Result<String, NgToolError>>),
+
+    /// 服务控制：更新检查完成
+    ServiceUpdateCheckResult(Box<Result<UpdateInfo, NgToolError>>),
 
     /// 日志行到达
     LogTailLine {

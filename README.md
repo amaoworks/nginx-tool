@@ -28,7 +28,7 @@
 
 ```
 Nginx-Tools/
-├── install.sh              # 一键安装 / 卸载脚本（支持 shell / tui 双模式）
+├── install.sh              # 安装 / 状态检测 / 更新 / 卸载脚本
 ├── README.md
 ├── shell/                  # Shell 版相关脚本
 │   ├── nginx-site.sh       # 站点管理脚本
@@ -81,6 +81,20 @@ sudo bash ~/nginx/install.sh shell  # Shell 版
 sudo bash ~/nginx/install.sh tui    # TUI 版
 ```
 
+### 检查安装状态与更新
+
+```bash
+# 查看 shell / tui 是否已安装，以及当前是否有新版本
+sudo bash ~/nginx/install.sh status
+
+# 更新所有已安装组件；未安装的组件会自动跳过
+sudo bash ~/nginx/install.sh update
+
+# 远程执行
+curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- status
+curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- update
+```
+
 ### 两种模式都做了什么？
 
 #### Shell 版
@@ -99,7 +113,14 @@ sudo bash ~/nginx/install.sh tui    # TUI 版
 - ✅ 自动从 [最新 Release](https://github.com/amaoworks/nginx-tool/releases/latest) 下载对应架构的 `ngtool` 二进制
 - ✅ 校验 ELF 文件头后安装到 `/usr/local/bin/ngtool`
 - ✅ 检查 Nginx / Certbot 是否已安装，未安装则提示一键安装
+- ✅ 可通过脚本更新到最新 Release
 - ✅ 直接全局可用，无需配置 Shell 别名
+
+#### 管理脚本
+
+- ✅ `status`：检测当前是否已安装 Shell / TUI 版，并显示版本/更新状态
+- ✅ `update`：更新已安装的 Shell 仓库与 TUI 二进制
+- ✅ `uninstall`：自动检测已安装组件并卸载
 
 ### 一键卸载
 
@@ -203,6 +224,7 @@ ngtool --help                # 命令行参数
 - **证书管理**：按站点关联的证书列表、续期、自动续签状态检查
 - **日志查看**：全局与站点级访问 / 错误日志实时跟踪、暂停 / 清屏 / 搜索
 - **服务控制**：测试配置、重载、重启（确认弹窗）、查看 systemd 状态
+- **版本检查**：在“服务控制”页检查最新 Release，显示当前版本、最新版本与发布页面
 - **备份还原**：限定到 `nginx.conf` + `sites-available/*.conf` + `sites-enabled` 启用关系，含 manifest 与 sha256 校验
 
 更详细的快捷键、配置目录、源码构建说明见 [`tui-next/README.md`](tui-next/README.md)。
@@ -309,6 +331,7 @@ ng new mysite mysite.example.com / --type static --enable --cert
 - 申请 SSL 证书前确保 **域名已解析到服务器** 且 **80 端口可访问**
 - TUI 版当前仅提供 **amd64 / arm64** Linux 预编译二进制，其他架构请使用 Shell 版或自行从 `tui-next/` 源码构建
 - Shell 版与 TUI 版可同时安装、互不冲突
+- `install.sh status` 在无网络、无 `curl` 或非受支持架构下，仍会显示本地安装状态；仅最新 Release 查询会降级失败
 - 建议定期执行 `ng backup`（或 TUI 版的备份功能）保存配置
 
 ---
@@ -330,8 +353,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-`install.sh` 在 `tui` 模式下会调用 `https://api.github.com/repos/amaoworks/nginx-tool/releases/latest`
-解析出与当前架构匹配的 asset，下载并安装到 `/usr/local/bin/ngtool`。
+`install.sh` 在 `tui` / `status` / `update` 相关流程里会调用
+`https://api.github.com/repos/amaoworks/nginx-tool/releases/latest`，
+解析出与当前架构匹配的 asset，用于检测或安装 `/usr/local/bin/ngtool`。
 
 ---
 

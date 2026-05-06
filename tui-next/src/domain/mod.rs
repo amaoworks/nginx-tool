@@ -7,3 +7,4 @@ pub mod dashboard;
 pub mod log;
 pub mod service;
 pub mod site;
+pub mod update;

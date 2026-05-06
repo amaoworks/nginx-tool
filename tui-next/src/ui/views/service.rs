@@ -48,6 +48,22 @@ fn render_summary(frame: &mut Frame, area: Rect, state: &AppState) {
         })
         .unwrap_or_else(|| "（版本未知）".into());
 
+    let update_line = state
+        .service
+        .update_info
+        .as_ref()
+        .map(|info| {
+            if info.has_update {
+                format!(
+                    "更新:    可更新 {} -> {}",
+                    info.current_version, info.latest_version
+                )
+            } else {
+                format!("更新:    已是最新 ({})", info.current_version)
+            }
+        })
+        .unwrap_or_else(|| "更新:    （尚未检查）".into());
+
     let lines = vec![
         Line::from(Span::styled(
             "═══ Nginx 服务 ═══",
@@ -58,6 +74,7 @@ fn render_summary(frame: &mut Frame, area: Rect, state: &AppState) {
         Line::from(""),
         Line::from(format!("状态:    {}", active)),
         Line::from(format!("版本:    {}", version)),
+        Line::from(update_line),
         Line::from(format!(
             "依赖:    nginx {}  systemctl {}",
             glyph(state.ctx.deps().nginx),
@@ -69,10 +86,11 @@ fn render_summary(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_buttons(frame: &mut Frame, area: Rect, state: &AppState) {
     let cols = Layout::horizontal([
-        Constraint::Percentage(25),
-        Constraint::Percentage(25),
-        Constraint::Percentage(25),
-        Constraint::Percentage(25),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
     ])
     .split(area);
 

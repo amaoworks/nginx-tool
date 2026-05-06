@@ -9,6 +9,7 @@ use crate::app::route::{MenuItem, Route, SitesRoute};
 use crate::domain::dashboard::DashboardSnapshot;
 use crate::domain::log::LogSource;
 use crate::domain::site::Site;
+use crate::domain::update::UpdateInfo;
 use crate::infra::AppContext;
 
 /// 仪表盘自动刷新间隔。详见 design.md 视图 1 与 architecture.md §11.2。
@@ -166,14 +167,16 @@ pub enum ServiceButton {
     Reload,
     Restart,
     Status,
+    CheckUpdate,
 }
 
 impl ServiceButton {
-    pub const ALL: [ServiceButton; 4] = [
+    pub const ALL: [ServiceButton; 5] = [
         ServiceButton::Test,
         ServiceButton::Reload,
         ServiceButton::Restart,
         ServiceButton::Status,
+        ServiceButton::CheckUpdate,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -182,6 +185,7 @@ impl ServiceButton {
             ServiceButton::Reload => "重载配置",
             ServiceButton::Restart => "重启服务 ⚠",
             ServiceButton::Status => "查看状态",
+            ServiceButton::CheckUpdate => "检查更新",
         }
     }
 }
@@ -357,6 +361,7 @@ pub struct ServiceState {
     pub focused: ServiceButton,
     pub output: Vec<String>,
     pub running: Option<ServiceButton>,
+    pub update_info: Option<UpdateInfo>,
     /// 待派发的操作意图
     pub pending_action: Option<ServiceButton>,
 }
@@ -1351,6 +1356,35 @@ impl AppState {
                     }
                 }
             }
+            AppEvent::ServiceUpdateCheckResult(b) => {
+                self.service.running = None;
+                match *b {
+                    Ok(info) => {
+                        self.service.push_output(["── 版本检查 ──".into()]);
+                        self.service.push_output([
+                            format!("当前版本：{}", info.current_version),
+                            format!("最新版本：{}", info.latest_version),
+                            format!("发布页面：{}", info.release_url),
+                        ]);
+                        if let Some(published_at) = info.published_at.clone() {
+                            self.service
+                                .push_output([format!("发布时间：{}", published_at)]);
+                        }
+                        self.service.update_info = Some(info.clone());
+                        self.notification = Some(Notification::success(if info.has_update {
+                            "检测到新版本".to_string()
+                        } else {
+                            "当前已是最新版本".to_string()
+                        }));
+                    }
+                    Err(e) => {
+                        self.service.push_output(["── 版本检查失败 ──".into()]);
+                        self.service
+                            .push_output(e.to_string().lines().map(String::from));
+                        self.notification = Some(Notification::failure("检查更新失败".to_string()));
+                    }
+                }
+            }
             AppEvent::SiteCreateResult { site_name, result } => {
                 self.site_form.submitting = false;
                 match *result {
@@ -2021,7 +2055,10 @@ impl AppState {
                 // 高危：先弹确认
                 self.modal = Some(Modal::confirm_restart_nginx());
             }
-            ServiceButton::Test | ServiceButton::Reload | ServiceButton::Status => {
+            ServiceButton::Test
+            | ServiceButton::Reload
+            | ServiceButton::Status
+            | ServiceButton::CheckUpdate => {
                 self.service.running = Some(btn);
                 self.service.pending_action = Some(btn);
             }

@@ -1,18 +1,22 @@
 #!/bin/bash
 
 # ============================================================
-# Nginx-Tools 一键安装 / 卸载脚本
+# Nginx-Tools 安装 / 更新 / 卸载脚本
 # 支持: Debian / Ubuntu  (x86_64 / aarch64)
 # 用法:
 #   bash install.sh                # 交互式选择 shell / tui
 #   bash install.sh shell          # 安装 Shell 版（Bash 脚本）
 #   bash install.sh tui            # 安装 TUI 版（ngtool 二进制）
+#   bash install.sh status         # 检测当前安装状态 / 最新版本
+#   bash install.sh update         # 更新已安装组件（shell / tui）
 #   bash install.sh uninstall      # 卸载（自动检测已安装组件）
 #
 #   # 远程执行
 #   curl -fsSL <URL> | bash                      # 交互安装
 #   curl -fsSL <URL> | bash -s -- shell          # 远程安装 Shell
 #   curl -fsSL <URL> | bash -s -- tui            # 远程安装 TUI
+#   curl -fsSL <URL> | bash -s -- status         # 检测安装状态
+#   curl -fsSL <URL> | bash -s -- update         # 更新已安装组件
 #   curl -fsSL <URL> | bash -s -- uninstall      # 远程卸载
 # ============================================================
 
@@ -33,6 +37,8 @@ RELEASE_API="https://api.github.com/repos/${REPO_SLUG}/releases/latest"
 RELEASE_PAGE="https://github.com/${REPO_SLUG}/releases/latest"
 INSTALL_DIR="$REAL_HOME/nginx"
 TUI_BIN_PATH="/usr/local/bin/ngtool"
+NG_ALIAS_PATH="${INSTALL_DIR}/shell/nginx-site.sh"
+NGMON_ALIAS_PATH="${INSTALL_DIR}/shell/nginx-monitor.sh"
 
 # ============================================================
 # 颜色与输出
@@ -244,6 +250,62 @@ check_curl() {
     success "curl 安装完成"
 }
 
+normalize_version() {
+    local ver="$1"
+    ver="${ver#v}"
+    printf '%s' "$ver"
+}
+
+get_tui_installed_version() {
+    if [ ! -x "$TUI_BIN_PATH" ]; then
+        return 1
+    fi
+    "$TUI_BIN_PATH" --version 2>/dev/null \
+        | sed -nE 's/.* ([0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?).*/\1/p' \
+        | head -n1
+}
+
+is_shell_installed() {
+    [ -d "$INSTALL_DIR/.git" ] && [ -f "$NG_ALIAS_PATH" ] && [ -f "$NGMON_ALIAS_PATH" ]
+}
+
+is_tui_installed() {
+    [ -x "$TUI_BIN_PATH" ]
+}
+
+compare_versions() {
+    local a="$1"
+    local b="$2"
+    if [ "$a" = "$b" ]; then
+        return 0
+    fi
+    local first
+    first=$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)
+    if [ "$first" = "$a" ]; then
+        return 1
+    fi
+    return 2
+}
+
+detect_arch_soft() {
+    local m
+    m=$(uname -m)
+    case "$m" in
+        x86_64|amd64)
+            ARCH="amd64"
+            return 0
+            ;;
+        aarch64|arm64)
+            ARCH="arm64"
+            return 0
+            ;;
+        *)
+            ARCH=""
+            return 1
+            ;;
+    esac
+}
+
 # ============================================================
 # 别名管理（仅 Shell 模式使用）
 # ============================================================
@@ -449,6 +511,7 @@ resolve_tui_asset() {
 
     TUI_DOWNLOAD_URL="$url"
     TUI_ASSET_NAME=$(basename "$url")
+    ASSET_VERSION=$(normalize_version "${ASSET_VERSION:-unknown}")
     success "最新版本: ${BOLD}${ASSET_VERSION:-unknown}${NC} → ${DIM}${TUI_ASSET_NAME}${NC}"
 }
 
@@ -518,6 +581,191 @@ install_tui() {
     echo "  快速使用："
     echo -e "    ${CYAN}ngtool${NC}            启动 TUI 主界面"
     echo -e "    ${CYAN}ngtool --help${NC}     查看命令行参数"
+    echo ""
+}
+
+show_status() {
+    header
+    echo -e "${BOLD}  🔎 安装状态检测${NC}"
+    echo ""
+
+    detect_shell
+
+    local shell_installed="no"
+    local tui_installed="no"
+    local shell_branch="未知"
+    local shell_commit="未知"
+    local tui_version="未安装"
+    local latest_tui="未知"
+    local shell_update="未安装"
+    local tui_update="未安装"
+    local latest_lookup_error=""
+
+    if is_shell_installed; then
+        shell_installed="yes"
+        shell_branch=$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "未知")
+        shell_commit=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo "未知")
+    fi
+
+    if is_tui_installed; then
+        tui_installed="yes"
+        tui_version=$(get_tui_installed_version || echo "未知")
+    fi
+
+    if command -v curl &>/dev/null; then
+        if detect_arch_soft; then
+            if resolve_tui_asset 2>/dev/null; then
+                latest_tui="${ASSET_VERSION:-未知}"
+            else
+                latest_lookup_error="无法获取最新 Release 信息"
+            fi
+        else
+            latest_lookup_error="当前架构不在 TUI 预编译支持范围内"
+        fi
+    else
+        latest_lookup_error="未安装 curl，无法查询最新 Release"
+    fi
+
+    if [ "$tui_installed" = "yes" ] && [ "$tui_version" != "未知" ] && [ "$latest_tui" != "未知" ]; then
+        compare_versions "$(normalize_version "$tui_version")" "$(normalize_version "$latest_tui")"
+        case $? in
+            0) tui_update="已是最新" ;;
+            1) tui_update="可更新 → ${latest_tui}" ;;
+            2) tui_update="本地版本较新/不同 (${tui_version})" ;;
+        esac
+    fi
+
+    if [ "$shell_installed" = "yes" ]; then
+        local local_head remote_head
+        local_head=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)
+        remote_head=$(git -C "$INSTALL_DIR" ls-remote origin -h "refs/heads/${shell_branch}" 2>/dev/null | awk '{print $1}' | head -n1)
+        if [ -n "$remote_head" ] && [ "$local_head" = "$remote_head" ]; then
+            shell_update="已是最新"
+        elif [ -n "$remote_head" ]; then
+            shell_update="可更新"
+        else
+            shell_update="无法检查远程版本"
+        fi
+    fi
+
+    echo -e "${BOLD}Shell 版${NC}"
+    if [ "$shell_installed" = "yes" ]; then
+        success "已安装: ${INSTALL_DIR}"
+        info "分支: ${shell_branch}"
+        info "提交: ${shell_commit}"
+        info "更新状态: ${shell_update}"
+    else
+        warn "未安装"
+    fi
+
+    echo ""
+    echo -e "${BOLD}TUI 版${NC}"
+    if [ "$tui_installed" = "yes" ]; then
+        success "已安装: ${TUI_BIN_PATH}"
+        info "当前版本: ${tui_version}"
+        info "最新版本: ${latest_tui}"
+        info "更新状态: ${tui_update}"
+    else
+        warn "未安装"
+        if [ "$latest_tui" != "未知" ]; then
+            info "最新版本: ${latest_tui}"
+        fi
+    fi
+
+    if [ -n "$latest_lookup_error" ]; then
+        warn "$latest_lookup_error"
+    fi
+
+    echo ""
+}
+
+update_shell() {
+    if ! is_shell_installed; then
+        warn "Shell 版未安装，跳过"
+        return 0
+    fi
+
+    info "更新 Shell 版..."
+    git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || git -C "$INSTALL_DIR" pull --rebase 2>/dev/null || {
+        error "Shell 版更新失败，请检查网络连接"
+        return 1
+    }
+    chmod +x "$NG_ALIAS_PATH" "$NGMON_ALIAS_PATH"
+    success "Shell 版已更新"
+}
+
+update_tui() {
+    if ! is_tui_installed; then
+        warn "TUI 版未安装，跳过"
+        return 0
+    fi
+
+    detect_arch
+    check_curl
+    resolve_tui_asset
+
+    local cur_ver latest_ver
+    cur_ver=$(get_tui_installed_version || echo "未知")
+    latest_ver="${ASSET_VERSION:-未知}"
+
+    if [ "$cur_ver" != "未知" ] && [ "$latest_ver" != "未知" ]; then
+        compare_versions "$(normalize_version "$cur_ver")" "$(normalize_version "$latest_ver")"
+        case $? in
+            0)
+                success "TUI 版已是最新版本 (${cur_ver})"
+                return 0
+                ;;
+            2)
+                warn "本地版本 (${cur_ver}) 高于/不同于最新 Release (${latest_ver})，仍将覆盖安装 Release"
+                ;;
+        esac
+    fi
+
+    info "更新 TUI 版: ${cur_ver} → ${latest_ver}"
+    local tmp
+    tmp=$(mktemp)
+    if ! curl -fsSL --progress-bar -o "$tmp" "$TUI_DOWNLOAD_URL"; then
+        rm -f "$tmp"
+        error "TUI 下载失败"
+        return 1
+    fi
+    if ! head -c 4 "$tmp" | grep -q $'\x7fELF'; then
+        rm -f "$tmp"
+        error "下载的文件不是有效的 ELF 二进制"
+        return 1
+    fi
+    install -m 0755 "$tmp" "$TUI_BIN_PATH"
+    rm -f "$tmp"
+    success "TUI 版已更新到 ${latest_ver}"
+}
+
+do_update() {
+    header
+    echo -e "${BOLD}  ⬆️  更新已安装组件${NC}"
+    echo ""
+
+    check_root
+    detect_distro
+    detect_shell
+
+    local has_any=0
+    if is_shell_installed; then
+        has_any=1
+        check_git
+        update_shell || exit 1
+    fi
+    if is_tui_installed; then
+        has_any=1
+        update_tui || exit 1
+    fi
+
+    if [ "$has_any" -eq 0 ]; then
+        warn "未检测到已安装组件，请先执行安装"
+        exit 1
+    fi
+
+    echo ""
+    success "更新流程完成"
     echo ""
 }
 
@@ -608,12 +856,16 @@ usage() {
   （无参数）      交互式选择 shell / tui 安装模式（默认）
   shell           安装 Shell 版（Bash 脚本 + ng / ngmon 别名）
   tui             安装 TUI 版（ngtool 二进制 → /usr/local/bin/ngtool）
+  status          检测当前安装状态与最新版本
+  update          更新已安装组件（shell / tui）
   uninstall       卸载（自动检测并移除已安装组件）
   help, -h        显示本帮助
 
 示例:
   sudo bash install.sh
   sudo bash install.sh tui
+  sudo bash install.sh status
+  sudo bash install.sh update
   sudo bash install.sh uninstall
 
 EOF
@@ -633,6 +885,16 @@ case "${1:-}" in
         ;;
     uninstall|remove)
         do_uninstall
+        exit 0
+        ;;
+    status|check)
+        check_root
+        detect_distro
+        show_status
+        exit 0
+        ;;
+    update|upgrade)
+        do_update
         exit 0
         ;;
     help|-h|--help)
