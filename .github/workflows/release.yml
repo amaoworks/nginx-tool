@@ -34,7 +34,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - arch: arm64
             target: aarch64-unknown-linux-gnu
-            apt-package: gcc-aarch64-linux-gnu
+            # gcc-aarch64-linux-gnu 提供交叉编译器；libc6-dev-arm64-cross 提供 Scrt1.o / crti.o 等 CRT 对象
+            apt-packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
             linker: aarch64-linux-gnu-gcc
 
     steps:
@@ -49,10 +50,10 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install cross-compile toolchain
-        if: matrix.apt-package != ''
+        if: matrix.apt-packages != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ${{ matrix.apt-package }}
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt-packages }}
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
