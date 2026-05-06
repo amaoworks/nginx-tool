@@ -1,0 +1,926 @@
+//! 站点配置解析与领域模型，对应 design.md 子模式 A、architecture.md §11.3。
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::SystemTime;
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use serde_json::json;
+
+use crate::error::NgToolError;
+use crate::infra::audit::AuditResult;
+use crate::infra::executor::CommandSpec;
+use crate::infra::nginx::scan_sites;
+use crate::infra::AppContext;
+
+/// 站点类型：与 design.md 子模式 A 类型列对齐。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum SiteType {
+    Proxy,
+    Emby,
+    Static,
+    Unknown,
+}
+
+impl SiteType {
+    pub fn label(&self) -> &'static str {
+        match self {
+            SiteType::Proxy => "代理",
+            SiteType::Emby => "Emby",
+            SiteType::Static => "静态",
+            SiteType::Unknown => "未知",
+        }
+    }
+}
+
+/// SSL 状态。详见 design.md 子模式 A SSL 列定义。
+#[derive(Debug, Clone, Serialize)]
+pub enum SslStatus {
+    None,
+    Active { days_left: i64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SslLevel {
+    None,
+    Ok,
+    Warning,
+    Critical,
+}
+
+impl SslStatus {
+    pub fn level(&self) -> SslLevel {
+        match self {
+            SslStatus::None => SslLevel::None,
+            SslStatus::Active { days_left } if *days_left < 7 => SslLevel::Critical,
+            SslStatus::Active { days_left } if *days_left < 30 => SslLevel::Warning,
+            SslStatus::Active { .. } => SslLevel::Ok,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Site {
+    pub name: String,
+    pub primary_domain: Option<String>,
+    pub all_domains: Vec<String>,
+    pub site_type: SiteType,
+    pub target: Option<String>,
+    pub enabled: bool,
+    pub ssl: SslStatus,
+    pub config_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ParsedConfig {
+    pub server_names: Vec<String>,
+    pub proxy_pass: Option<String>,
+    pub static_root: Option<String>,
+    pub has_emby_marker: bool,
+}
+
+/// 解析单个站点 conf 文件，提取核心指令。
+/// 注释行被剥离后再做正则匹配；emby 标记基于工具注释直接判断。
+pub fn parse_config(text: &str) -> ParsedConfig {
+    let cleaned: String = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let directive_re =
+        regex::Regex::new(r"(?m)^\s*(server_name|proxy_pass|root)\s+([^;]+);").unwrap();
+
+    let mut server_names: Vec<String> = Vec::new();
+    let mut proxy_pass: Option<String> = None;
+    let mut static_root: Option<String> = None;
+
+    for cap in directive_re.captures_iter(&cleaned) {
+        let name = &cap[1];
+        let value = cap[2].trim();
+        match name {
+            "server_name" => {
+                for d in value.split_whitespace() {
+                    server_names.push(d.to_string());
+                }
+            }
+            "proxy_pass" if proxy_pass.is_none() => {
+                proxy_pass = Some(value.to_string());
+            }
+            "root" if static_root.is_none() => {
+                static_root = Some(value.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    let has_emby_marker = text.contains("nginx-tools:tool-marker") && text.contains("type=emby");
+
+    ParsedConfig {
+        server_names,
+        proxy_pass,
+        static_root,
+        has_emby_marker,
+    }
+}
+
+pub fn infer_type(parsed: &ParsedConfig) -> SiteType {
+    if parsed.has_emby_marker {
+        return SiteType::Emby;
+    }
+    if parsed.proxy_pass.is_some() {
+        return SiteType::Proxy;
+    }
+    if parsed.static_root.is_some() {
+        return SiteType::Static;
+    }
+    SiteType::Unknown
+}
+
+/// 从 certbot certificates 的输出解析 域名 → 剩余天数 映射。
+pub fn parse_certbot_domains(text: &str) -> HashMap<String, i64> {
+    let mut map: HashMap<String, i64> = HashMap::new();
+    let domains_re = regex::Regex::new(r"(?m)^\s*Domains:\s*(.+)$").unwrap();
+    let valid_re = regex::Regex::new(r"VALID:\s*(\d+)\s*day").unwrap();
+
+    let mut last_domains: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if let Some(cap) = domains_re.captures(line) {
+            last_domains = cap[1].split_whitespace().map(String::from).collect();
+            continue;
+        }
+        if let Some(cap) = valid_re.captures(line) {
+            if let Ok(days) = cap[1].parse::<i64>() {
+                for d in &last_domains {
+                    map.insert(d.clone(), days);
+                }
+                last_domains.clear();
+            }
+        }
+    }
+    map
+}
+
+/// 列出全部站点。证书匹配失败不阻断列表输出（架构 §11.3 / R2 闭环）。
+pub async fn list_sites(ctx: Arc<AppContext>) -> Result<Vec<Site>, NgToolError> {
+    let avail = ctx.probe.sites_available.clone();
+    let enabled = ctx.probe.sites_enabled.clone();
+
+    let raws = tokio::task::spawn_blocking(move || scan_sites(&avail, &enabled))
+        .await
+        .map_err(|e| NgToolError::FileOperationFailed {
+            path: ctx.probe.sites_available.clone(),
+            message: format!("任务异常：{}", e),
+        })?
+        .map_err(|e| NgToolError::FileOperationFailed {
+            path: ctx.probe.sites_available.clone(),
+            message: e.to_string(),
+        })?;
+
+    // 证书域名 → 剩余天数
+    let cert_map = if ctx.deps().certbot {
+        match ctx
+            .executor
+            .run(
+                CommandSpec::new("certbot")
+                    .arg("certificates")
+                    .timeout(Duration::from_secs(3)),
+            )
+            .await
+        {
+            Ok(out) => parse_certbot_domains(&out.stdout),
+            Err(_) => HashMap::new(),
+        }
+    } else {
+        HashMap::new()
+    };
+
+    let mut sites = Vec::with_capacity(raws.len());
+    for raw in raws {
+        let content = std::fs::read_to_string(&raw.path).unwrap_or_default();
+        let parsed = parse_config(&content);
+        let site_type = infer_type(&parsed);
+        let primary_domain = parsed.server_names.first().cloned();
+        let target = match site_type {
+            SiteType::Static => parsed.static_root.clone(),
+            _ => parsed.proxy_pass.clone(),
+        };
+        let ssl = match &primary_domain {
+            Some(d) => match cert_map.get(d) {
+                Some(days) => SslStatus::Active { days_left: *days },
+                None => SslStatus::None,
+            },
+            None => SslStatus::None,
+        };
+        sites.push(Site {
+            name: raw.name,
+            primary_domain,
+            all_domains: parsed.server_names,
+            site_type,
+            target,
+            enabled: raw.enabled,
+            ssl,
+            config_path: raw.path,
+        });
+    }
+    Ok(sites)
+}
+
+/// 启用站点：建链接 → nginx -t → reload。任一步失败按反向次序回滚。
+/// 详见 architecture.md §15.3 启用流程。
+pub async fn enable(ctx: Arc<AppContext>, name: &str) -> Result<(), NgToolError> {
+    let started = Instant::now();
+    let avail = ctx.probe.sites_available.join(format!("{}.conf", name));
+    let link = ctx.probe.sites_enabled.join(format!("{}.conf", name));
+
+    // 已启用：幂等
+    if link.symlink_metadata().is_ok() {
+        log_audit(
+            &ctx,
+            "site.enable",
+            name,
+            AuditResult::Success,
+            started,
+            json!({"already": true}),
+        );
+        return Ok(());
+    }
+    if !avail.exists() {
+        return Err(NgToolError::FileOperationFailed {
+            path: avail,
+            message: "站点配置不存在".into(),
+        });
+    }
+
+    // 创建符号链接
+    if let Err(e) = std::os::unix::fs::symlink(&avail, &link) {
+        let err = NgToolError::FileOperationFailed {
+            path: link.clone(),
+            message: format!("创建符号链接失败：{}", e),
+        };
+        log_audit(
+            &ctx,
+            "site.enable",
+            name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "symlink", "error": err.to_string()}),
+        );
+        return Err(err);
+    }
+
+    // nginx -t
+    if let Err(e) = ctx.nginx.test_config().await {
+        let _ = std::fs::remove_file(&link);
+        // 二次 test 用于校验回滚后状态，但不影响错误返回
+        let _ = ctx.nginx.test_config().await;
+        log_audit(
+            &ctx,
+            "site.enable",
+            name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "test", "error": e.to_string()}),
+        );
+        return Err(e);
+    }
+
+    // reload
+    if let Err(e) = ctx.systemd.reload("nginx").await {
+        let _ = std::fs::remove_file(&link);
+        let _ = ctx.nginx.test_config().await;
+        log_audit(
+            &ctx,
+            "site.enable",
+            name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "reload", "error": e.to_string()}),
+        );
+        return Err(e);
+    }
+
+    log_audit(
+        &ctx,
+        "site.enable",
+        name,
+        AuditResult::Success,
+        started,
+        json!({}),
+    );
+    Ok(())
+}
+
+/// 停用站点：记录原 target → 删链接 → nginx -t → reload。
+/// 任一步失败时依次按反向恢复。详见 architecture.md §15.3 停用流程。
+pub async fn disable(ctx: Arc<AppContext>, name: &str) -> Result<(), NgToolError> {
+    let started = Instant::now();
+    let link = ctx.probe.sites_enabled.join(format!("{}.conf", name));
+
+    if link.symlink_metadata().is_err() {
+        log_audit(
+            &ctx,
+            "site.disable",
+            name,
+            AuditResult::Success,
+            started,
+            json!({"already": true}),
+        );
+        return Ok(());
+    }
+
+    let original_target = link.read_link().ok();
+
+    if let Err(e) = std::fs::remove_file(&link) {
+        let err = NgToolError::FileOperationFailed {
+            path: link.clone(),
+            message: e.to_string(),
+        };
+        log_audit(
+            &ctx,
+            "site.disable",
+            name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "unlink", "error": err.to_string()}),
+        );
+        return Err(err);
+    }
+
+    if let Err(e) = ctx.nginx.test_config().await {
+        if let Some(target) = &original_target {
+            let _ = std::os::unix::fs::symlink(target, &link);
+            let _ = ctx.nginx.test_config().await;
+        }
+        log_audit(
+            &ctx,
+            "site.disable",
+            name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "test", "error": e.to_string()}),
+        );
+        return Err(e);
+    }
+
+    if let Err(e) = ctx.systemd.reload("nginx").await {
+        if let Some(target) = &original_target {
+            let _ = std::os::unix::fs::symlink(target, &link);
+        }
+        log_audit(
+            &ctx,
+            "site.disable",
+            name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "reload", "error": e.to_string()}),
+        );
+        return Err(e);
+    }
+
+    log_audit(
+        &ctx,
+        "site.disable",
+        name,
+        AuditResult::Success,
+        started,
+        json!({}),
+    );
+    Ok(())
+}
+
+fn log_audit(
+    ctx: &AppContext,
+    action: &str,
+    target: &str,
+    result: AuditResult,
+    started: Instant,
+    details: serde_json::Value,
+) {
+    ctx.audit.log(
+        action,
+        target,
+        result,
+        started.elapsed().as_millis() as u64,
+        details,
+    );
+}
+
+/// 新建站点输入参数
+#[derive(Debug, Clone)]
+pub struct CreateSiteInput {
+    pub name: String,
+    pub domain: String,
+    pub kind: crate::template::renderer::SiteKind,
+    pub upstream_scheme: String,
+    pub upstream_target: String,
+    pub static_root: String,
+    pub enable_now: bool,
+    pub request_cert: bool,
+}
+
+/// 保存已有站点配置的输入参数。
+#[derive(Debug, Clone)]
+pub struct SaveSiteInput {
+    pub name: String,
+    pub content: String,
+    /// true = 写入后执行 nginx -t 并 reload；失败时恢复原文件。
+    pub test_and_reload: bool,
+    /// 进入编辑时记录的目标文件 mtime，用于 §15.0 mtime 并发保护。
+    /// `None` 表示不做并发校验（如刚创建后立即保存的极端情况）。
+    pub expected_mtime: Option<SystemTime>,
+}
+
+/// 新建站点结果
+#[derive(Debug, Clone)]
+pub enum CreateSiteOutcome {
+    /// 全部成功
+    Ok { cert_requested: bool },
+    /// 站点创建成功但证书申请失败
+    CertFailed { error: String },
+}
+
+/// 新建站点：渲染模板 → 写入配置 → 可选启用 → 可选证书申请。
+/// 任一步失败按反向次序回滚。详见 design.md 子模式 B 创建流程。
+pub async fn create_site(
+    ctx: Arc<AppContext>,
+    input: CreateSiteInput,
+) -> Result<CreateSiteOutcome, NgToolError> {
+    let started = Instant::now();
+    let conf_name = format!("{}.conf", input.name);
+    let avail_path = ctx.probe.sites_available.join(&conf_name);
+    let link_path = ctx.probe.sites_enabled.join(&conf_name);
+
+    // 渲染模板
+    let params = crate::template::renderer::RenderParams {
+        site_name: input.name.clone(),
+        domain_name: input.domain.clone(),
+        upstream_scheme: input.upstream_scheme.clone(),
+        upstream_target: input.upstream_target.clone(),
+        static_root: input.static_root.clone(),
+        ..Default::default()
+    };
+    let content = crate::template::renderer::render(input.kind, &params)
+        .map_err(|e| NgToolError::TemplateFailed { message: e })?;
+
+    // 写入：tmp 文件落在 sites-available 同目录（保证 hard_link 在同一文件系统）
+    // 用 O_CREAT|O_EXCL 创建 tmp（防 tmp race），用 hard_link 替代 rename 做 race-safe 创建：
+    // 若目标已存在则 EEXIST，避免 rename 静默覆盖。详见 architecture.md §15.1。
+    let tmp_path = ctx.probe.sites_available.join(format!(
+        ".{}.conf.{}.{}.tmp",
+        input.name,
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let write_result = tokio::task::spawn_blocking({
+        let tmp = tmp_path.clone();
+        let dst = avail_path.clone();
+        let bytes = content.into_bytes();
+        let site_name = input.name.clone();
+        move || -> Result<(), NgToolError> {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt as _;
+
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true) // O_CREAT | O_EXCL：tmp 不可被并发创建
+                .mode(0o644)
+                .open(&tmp)
+                .map_err(|e| NgToolError::FileOperationFailed {
+                    path: tmp.clone(),
+                    message: format!("创建临时文件失败：{}", e),
+                })?;
+            f.write_all(&bytes)
+                .map_err(|e| NgToolError::FileOperationFailed {
+                    path: tmp.clone(),
+                    message: format!("写入临时文件失败：{}", e),
+                })?;
+            f.sync_all().map_err(|e| NgToolError::FileOperationFailed {
+                path: tmp.clone(),
+                message: format!("fsync 失败：{}", e),
+            })?;
+            drop(f);
+
+            // hard_link 是 race-safe 的：目标存在时 EEXIST
+            match std::fs::hard_link(&tmp, &dst) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let _ = std::fs::remove_file(&tmp);
+                    Err(NgToolError::InvalidInput {
+                        field: "site_name".into(),
+                        message: format!("站点 {} 已存在", site_name),
+                    })
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    Err(NgToolError::FileOperationFailed {
+                        path: dst,
+                        message: e.to_string(),
+                    })
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|e| NgToolError::FileOperationFailed {
+        path: avail_path.clone(),
+        message: format!("任务异常：{}", e),
+    })?;
+
+    write_result?;
+
+    // 跟踪已完成的步骤用于回滚
+    let config_written = true;
+    let mut link_created = false;
+
+    // 可选启用
+    if input.enable_now {
+        // 创建符号链接
+        if let Err(e) = tokio::task::spawn_blocking({
+            let target = avail_path.clone();
+            let link = link_path.clone();
+            move || std::os::unix::fs::symlink(&target, &link)
+        })
+        .await
+        .map_err(|e| NgToolError::FileOperationFailed {
+            path: link_path.clone(),
+            message: format!("任务异常：{}", e),
+        })? {
+            rollback_site(&ctx, &avail_path, &link_path, config_written, link_created).await;
+            return Err(NgToolError::FileOperationFailed {
+                path: link_path.clone(),
+                message: e.to_string(),
+            });
+        }
+        link_created = true;
+
+        // nginx -t
+        if let Err(e) = ctx.nginx.test_config().await {
+            rollback_site(&ctx, &avail_path, &link_path, config_written, link_created).await;
+            log_audit(
+                &ctx,
+                "site.create",
+                &input.name,
+                AuditResult::Failure,
+                started,
+                json!({"stage": "test", "error": e.to_string()}),
+            );
+            return Err(e);
+        }
+
+        // reload
+        if let Err(e) = ctx.systemd.reload("nginx").await {
+            rollback_site(&ctx, &avail_path, &link_path, config_written, link_created).await;
+            log_audit(
+                &ctx,
+                "site.create",
+                &input.name,
+                AuditResult::Failure,
+                started,
+                json!({"stage": "reload", "error": e.to_string()}),
+            );
+            return Err(e);
+        }
+        // reloaded = true;
+    }
+
+    // 可选证书申请（启用成功后）
+    let mut cert_requested = false;
+    if input.request_cert && input.enable_now {
+        cert_requested = true;
+        let domain_arg = input.domain.clone();
+        let cert_result = ctx
+            .executor
+            .run(
+                CommandSpec::new("certbot")
+                    .arg("--nginx")
+                    .arg("-d")
+                    .arg(&domain_arg)
+                    .timeout(Duration::from_secs(120)),
+            )
+            .await;
+
+        match cert_result {
+            Ok(_) => {
+                log_audit(
+                    &ctx,
+                    "cert.request",
+                    &input.name,
+                    AuditResult::Success,
+                    started,
+                    json!({"domain": domain_arg}),
+                );
+            }
+            Err(e) => {
+                // 证书失败不回滚站点
+                log_audit(
+                    &ctx,
+                    "cert.request",
+                    &input.name,
+                    AuditResult::Failure,
+                    started,
+                    json!({"error": e.to_string()}),
+                );
+                log_audit(
+                    &ctx,
+                    "site.create",
+                    &input.name,
+                    AuditResult::Success,
+                    started,
+                    json!({"cert": "failed"}),
+                );
+                return Ok(CreateSiteOutcome::CertFailed {
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    log_audit(
+        &ctx,
+        "site.create",
+        &input.name,
+        AuditResult::Success,
+        started,
+        json!({"enable": input.enable_now, "cert": cert_requested}),
+    );
+    Ok(CreateSiteOutcome::Ok { cert_requested })
+}
+
+/// 回滚新建站点的已执行步骤
+async fn rollback_site(
+    ctx: &AppContext,
+    avail_path: &std::path::Path,
+    link_path: &std::path::Path,
+    config_written: bool,
+    link_created: bool,
+) {
+    if link_created {
+        let lp = link_path.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(&lp)).await;
+        let _ = ctx.nginx.test_config().await;
+    }
+    if config_written {
+        let ap = avail_path.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(&ap)).await;
+    }
+}
+
+/// 保存已有站点配置：临时文件原子替换，必要时 `nginx -t` + reload，失败恢复原内容。
+/// 详见 risks.md R1 与 architecture.md §15.2。
+/// 写入前比较 expected_mtime 与目标文件实际 mtime（架构 §15.0 mtime 并发保护），
+/// 不一致时中止保存并提示外部修改。
+pub async fn save_site_config(
+    ctx: Arc<AppContext>,
+    input: SaveSiteInput,
+) -> Result<(), NgToolError> {
+    let started = Instant::now();
+    let conf_name = format!("{}.conf", input.name);
+    let target_path = ctx.probe.sites_available.join(&conf_name);
+
+    if !target_path.exists() {
+        let err = NgToolError::FileOperationFailed {
+            path: target_path.clone(),
+            message: "站点配置不存在".into(),
+        };
+        log_audit(
+            &ctx,
+            "site.edit",
+            &input.name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "precheck", "error": err.to_string()}),
+        );
+        return Err(err);
+    }
+
+    // mtime 并发保护（架构 §15.0）：写入前比较预期 mtime 与当前 mtime
+    if let Some(expected) = input.expected_mtime {
+        let actual = tokio::fs::metadata(&target_path)
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok());
+        if actual != Some(expected) {
+            let err = NgToolError::FileOperationFailed {
+                path: target_path.clone(),
+                message:
+                    "目标文件已被外部修改（mtime 变化），保存被取消。请按 Esc 返回后重新进入编辑"
+                        .into(),
+            };
+            log_audit(
+                &ctx,
+                "site.edit",
+                &input.name,
+                AuditResult::Failure,
+                started,
+                json!({"stage": "mtime_check", "error": err.to_string()}),
+            );
+            return Err(err);
+        }
+    }
+
+    let original =
+        tokio::fs::read(&target_path)
+            .await
+            .map_err(|e| NgToolError::FileOperationFailed {
+                path: target_path.clone(),
+                message: format!("读取原配置失败：{}", e),
+            })?;
+
+    if let Err(e) = atomic_replace(&ctx, &input.name, &target_path, input.content.as_bytes()).await
+    {
+        log_audit(
+            &ctx,
+            "site.edit",
+            &input.name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "write", "error": e.to_string()}),
+        );
+        return Err(e);
+    }
+
+    if input.test_and_reload {
+        if let Err(e) = ctx.nginx.test_config().await {
+            let _ = atomic_replace(&ctx, &input.name, &target_path, &original).await;
+            let _ = ctx.nginx.test_config().await;
+            log_audit(
+                &ctx,
+                "site.edit",
+                &input.name,
+                AuditResult::Failure,
+                started,
+                json!({"stage": "test", "error": e.to_string(), "rolled_back": true}),
+            );
+            return Err(e);
+        }
+
+        if let Err(e) = ctx.systemd.reload("nginx").await {
+            let _ = atomic_replace(&ctx, &input.name, &target_path, &original).await;
+            let _ = ctx.nginx.test_config().await;
+            log_audit(
+                &ctx,
+                "site.edit",
+                &input.name,
+                AuditResult::Failure,
+                started,
+                json!({"stage": "reload", "error": e.to_string(), "rolled_back": true}),
+            );
+            return Err(e);
+        }
+    }
+
+    log_audit(
+        &ctx,
+        "site.edit",
+        &input.name,
+        AuditResult::Success,
+        started,
+        json!({"test_and_reload": input.test_and_reload}),
+    );
+    Ok(())
+}
+
+async fn atomic_replace(
+    ctx: &AppContext,
+    site_name: &str,
+    target_path: &std::path::Path,
+    content: &[u8],
+) -> Result<(), NgToolError> {
+    let tmp_path = ctx.paths.tmp.join(format!(
+        "{}.{}.{}.tmp",
+        site_name,
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    tokio::fs::write(&tmp_path, content)
+        .await
+        .map_err(|e| NgToolError::FileOperationFailed {
+            path: tmp_path.clone(),
+            message: e.to_string(),
+        })?;
+
+    let result = tokio::task::spawn_blocking({
+        let src = tmp_path.clone();
+        let dst = target_path.to_path_buf();
+        move || std::fs::rename(&src, &dst)
+    })
+    .await
+    .map_err(|e| NgToolError::FileOperationFailed {
+        path: target_path.to_path_buf(),
+        message: format!("任务异常：{}", e),
+    })?;
+
+    if let Err(e) = result {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(NgToolError::FileOperationFailed {
+            path: target_path.to_path_buf(),
+            message: e.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_proxy_config() {
+        let text = r#"
+server {
+    listen 80;
+    server_name app.example.com www.app.example.com;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+"#;
+        let p = parse_config(text);
+        assert_eq!(
+            p.server_names,
+            vec!["app.example.com", "www.app.example.com"]
+        );
+        assert_eq!(p.proxy_pass.as_deref(), Some("http://127.0.0.1:8080"));
+        assert!(p.static_root.is_none());
+        assert!(!p.has_emby_marker);
+        assert_eq!(infer_type(&p), SiteType::Proxy);
+    }
+
+    #[test]
+    fn parse_static_config() {
+        let text = r#"
+server {
+    listen 80;
+    server_name blog.example.com;
+    root /var/www/blog;
+}
+"#;
+        let p = parse_config(text);
+        assert_eq!(p.server_names, vec!["blog.example.com"]);
+        assert_eq!(p.static_root.as_deref(), Some("/var/www/blog"));
+        assert_eq!(infer_type(&p), SiteType::Static);
+    }
+
+    #[test]
+    fn parse_emby_marker_detected() {
+        let text = r#"
+# nginx-tools:tool-marker: type=emby
+server {
+    listen 80;
+    server_name emby.example.com;
+    location / {
+        proxy_pass http://192.168.1.5:8096;
+    }
+}
+"#;
+        let p = parse_config(text);
+        assert!(p.has_emby_marker);
+        assert_eq!(infer_type(&p), SiteType::Emby);
+    }
+
+    #[test]
+    fn comments_are_ignored_in_directive_parsing() {
+        let text = r#"
+server {
+    # server_name commented.example.com;
+    server_name real.example.com;
+    # proxy_pass http://commented;
+    proxy_pass http://127.0.0.1:9090;
+}
+"#;
+        let p = parse_config(text);
+        assert_eq!(p.server_names, vec!["real.example.com"]);
+        assert_eq!(p.proxy_pass.as_deref(), Some("http://127.0.0.1:9090"));
+    }
+
+    #[test]
+    fn certbot_domains_parsed() {
+        let text = "
+Certificate Name: app
+  Domains: app.example.com www.app.example.com
+    Expiry Date: 2026-07-04 ... (VALID: 67 days)
+Certificate Name: api
+  Domains: api.example.com
+    Expiry Date: 2026-05-04 ... (VALID: 5 days)
+";
+        let map = parse_certbot_domains(text);
+        assert_eq!(map.get("app.example.com"), Some(&67));
+        assert_eq!(map.get("www.app.example.com"), Some(&67));
+        assert_eq!(map.get("api.example.com"), Some(&5));
+    }
+}

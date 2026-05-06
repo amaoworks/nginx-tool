@@ -1,0 +1,21 @@
+server {
+    listen 80;
+    server_name {{ domain_name }};
+    root {{ static_root }};
+    index index.html index.htm;
+
+    # nginx-tools:custom-before-location:start
+    {{ custom_before_location | safe }}
+    # nginx-tools:custom-before-location:end
+
+    location / {
+        try_files $uri $uri/ =404;
+        # nginx-tools:custom-inside-location:start
+        {{ custom_inside_location | safe }}
+        # nginx-tools:custom-inside-location:end
+    }
+
+    # nginx-tools:custom-after-location:start
+    {{ custom_after_location | safe }}
+    # nginx-tools:custom-after-location:end
+}
