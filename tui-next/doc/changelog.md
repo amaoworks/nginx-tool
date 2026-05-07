@@ -9,6 +9,7 @@
 ### 修改清单
 
 - `install.sh`：本地版本解析兼容 `v1.0.4` 和 `1.0.4`；状态检测静默解析 Release asset；无参数菜单检测到可更新时默认项自动切到“更新”。
+- `install.sh`：修复 `set -e` 与 `compare_versions` 返回码冲突；当本地版本低于最新 Release 时，状态检测和更新流程不再提前退出。
 - `src/domain/update.rs`：新增 Release asset 解析、架构匹配、ELF 校验和自升级替换当前二进制；版本比较改为只在远端版本更高时提示更新。
 - `src/app/event.rs` / `src/app/state.rs` / `src/main.rs`：新增 `ServiceUpgradeResult` 和“更新 TUI”服务按钮。
 - `src/ui/views/service.rs`：服务控制页增加“更新 TUI”按钮，并在只读模式下禁用。

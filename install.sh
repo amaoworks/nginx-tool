@@ -682,8 +682,13 @@ show_status() {
     fi
 
     if [ "$tui_installed" = "yes" ] && [ "$tui_version" != "未知" ] && [ "$latest_tui" != "未知" ]; then
-        compare_versions "$(normalize_version "$tui_version")" "$(normalize_version "$latest_tui")"
-        case $? in
+        local cmp
+        if compare_versions "$(normalize_version "$tui_version")" "$(normalize_version "$latest_tui")"; then
+            cmp=0
+        else
+            cmp=$?
+        fi
+        case $cmp in
             0) tui_update="已是最新" ;;
             1) tui_update="可更新 → ${latest_tui}" ;;
             2) tui_update="本地版本较新/不同 (${tui_version})" ;;
@@ -767,8 +772,13 @@ update_tui() {
     latest_ver="${ASSET_VERSION:-未知}"
 
     if [ "$cur_ver" != "未知" ] && [ "$latest_ver" != "未知" ]; then
-        compare_versions "$(normalize_version "$cur_ver")" "$(normalize_version "$latest_ver")"
-        case $? in
+        local cmp
+        if compare_versions "$(normalize_version "$cur_ver")" "$(normalize_version "$latest_ver")"; then
+            cmp=0
+        else
+            cmp=$?
+        fi
+        case $cmp in
             0)
                 success "TUI 版已是最新版本 (${cur_ver})"
                 return 0
