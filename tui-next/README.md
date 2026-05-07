@@ -11,7 +11,7 @@
 - **站点管理**：列表、新建（代理 / Emby / 静态）、表单 / 原始模式编辑、注入槽全屏编辑、启用 / 停用、删除、单站点证书申请、跳转日志
 - **证书管理**：按站点关联的证书列表、续期、自动续签状态检查
 - **日志查看**：全局与站点级访问 / 错误日志实时跟踪、暂停 / 清屏 / 搜索
-- **服务控制**：测试配置、重载、重启（确认弹窗）、查看 systemd 状态、检查最新 Release
+- **服务控制**：测试配置、重载、重启（确认弹窗）、查看 systemd 状态、检查最新 Release、更新 TUI 二进制
 - **备份还原**：范围限定到 `nginx.conf` + `sites-available/*.conf` + `sites-enabled` 启用关系，含 manifest 与 sha256 校验
 
 ## 系统要求
@@ -40,12 +40,17 @@ cargo build --release            # 产物 target/release/ngtool
 
 OrangePi (aarch64) 与常见 x86_64 Linux 直接 native 编译即可。
 
-## 更新检查
+## 更新与自升级
 
 在 TUI 的“服务控制”页可直接执行“检查更新”，会读取 GitHub 最新 Release，
 显示当前版本、最新版本、发布时间与发布页面链接。
 
-这只是版本检测，不会在 TUI 内直接覆盖安装二进制。实际更新仍建议使用仓库根的：
+同页的“更新 TUI”会下载当前架构对应的 Release asset，并原子替换当前运行的
+`ngtool` 二进制。Linux 允许替换正在运行的可执行文件；更新完成后退出并重新启动
+`ngtool` 才会运行新版本。写入 `/usr/local/bin/ngtool` 通常需要 root 权限，非 root
+或只读模式下该按钮会被禁用。
+
+也可以使用仓库根的安装脚本更新：
 
 ```bash
 sudo bash install.sh update
@@ -55,7 +60,9 @@ sudo bash install.sh update
 都使用同一个构建时版本号：
 
 - 在 tag 上本地构建时，自动读取当前 Git tag
+- CI 注入的 `v1.0.4` 这类 tag 会标准化为 `1.0.4`
 - 在非 tag 开发构建时，回退到 `Cargo.toml` 的 package version
+- `Cargo.toml` 的 package version 需要随发布号同步，否则 Cargo 编译日志会显示旧版本号
 
 ## 快捷键速查
 

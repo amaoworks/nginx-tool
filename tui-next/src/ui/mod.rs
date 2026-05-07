@@ -248,6 +248,7 @@ fn footer_hints(state: &AppState) -> String {
         Route::Service => {
             tips.push("[Tab] 切换按钮");
             tips.push("[Enter] 执行");
+            tips.push("[c] 清屏");
             tips.push("[Esc] 返回侧栏");
         }
         Route::Backup => {

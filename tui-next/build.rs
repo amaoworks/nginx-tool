@@ -6,7 +6,8 @@ fn main() {
 
     let version = std::env::var("NGTOOL_BUILD_VERSION")
         .ok()
-        .filter(|v| !v.trim().is_empty())
+        .map(|v| normalize_version(&v))
+        .filter(|v| !v.is_empty())
         .or_else(version_from_git_tag)
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
 
@@ -25,6 +26,10 @@ fn version_from_git_tag() -> Option<String> {
     if tag.is_empty() {
         None
     } else {
-        Some(tag.trim_start_matches('v').to_string())
+        Some(normalize_version(&tag))
     }
+}
+
+fn normalize_version(input: &str) -> String {
+    input.trim().trim_start_matches('v').to_string()
 }

@@ -170,15 +170,17 @@ pub enum ServiceButton {
     Restart,
     Status,
     CheckUpdate,
+    Upgrade,
 }
 
 impl ServiceButton {
-    pub const ALL: [ServiceButton; 5] = [
+    pub const ALL: [ServiceButton; 6] = [
         ServiceButton::Test,
         ServiceButton::Reload,
         ServiceButton::Restart,
         ServiceButton::Status,
         ServiceButton::CheckUpdate,
+        ServiceButton::Upgrade,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -188,6 +190,7 @@ impl ServiceButton {
             ServiceButton::Restart => "重启服务 ⚠",
             ServiceButton::Status => "查看状态",
             ServiceButton::CheckUpdate => "检查更新",
+            ServiceButton::Upgrade => "更新 TUI",
         }
     }
 }
@@ -1300,17 +1303,12 @@ impl AppState {
                 self.sites.action_in_flight = None;
                 match *result {
                     Ok(()) => {
-                        self.notification = Some(Notification::success(format!(
-                            "站点 {} 已删除",
-                            site_name
-                        )));
+                        self.notification =
+                            Some(Notification::success(format!("站点 {} 已删除", site_name)));
                         self.sites.pending_refresh = true;
                     }
                     Err(e) => {
-                        self.notification = Some(Notification::failure(format!(
-                            "删除失败：{}",
-                            e
-                        )));
+                        self.notification = Some(Notification::failure(format!("删除失败：{}", e)));
                         self.sites.pending_refresh = true;
                     }
                 }
@@ -1403,6 +1401,42 @@ impl AppState {
                         self.service
                             .push_output(e.to_string().lines().map(String::from));
                         self.notification = Some(Notification::failure("检查更新失败".to_string()));
+                    }
+                }
+            }
+            AppEvent::ServiceUpgradeResult(b) => {
+                self.service.running = None;
+                match *b {
+                    Ok(outcome) => {
+                        self.service.update_info = Some(outcome.info.clone());
+                        self.service.push_output(["── TUI 更新 ──".into()]);
+                        if outcome.updated {
+                            self.service.push_output([
+                                format!(
+                                    "已更新：{} -> {}",
+                                    outcome.info.current_version, outcome.info.latest_version
+                                ),
+                                format!("二进制：{}", outcome.binary_path.display()),
+                                "请退出并重新启动 ngtool 以运行新版本。".to_string(),
+                            ]);
+                            self.notification = Some(Notification::success(
+                                "TUI 已更新，重启 ngtool 后生效".to_string(),
+                            ));
+                        } else {
+                            self.service.push_output([
+                                format!("当前版本：{}", outcome.info.current_version),
+                                format!("最新版本：{}", outcome.info.latest_version),
+                                "无需更新。".to_string(),
+                            ]);
+                            self.notification =
+                                Some(Notification::success("当前已是最新版本".to_string()));
+                        }
+                    }
+                    Err(e) => {
+                        self.service.push_output(["── TUI 更新失败 ──".into()]);
+                        self.service
+                            .push_output(e.to_string().lines().map(String::from));
+                        self.notification = Some(Notification::failure("TUI 更新失败".to_string()));
                     }
                 }
             }
@@ -2150,7 +2184,10 @@ impl AppState {
         }
         let btn = self.service.focused;
         // 只读裁剪：reload / restart 在只读模式下被禁用
-        let needs_root = matches!(btn, ServiceButton::Reload | ServiceButton::Restart);
+        let needs_root = matches!(
+            btn,
+            ServiceButton::Reload | ServiceButton::Restart | ServiceButton::Upgrade
+        );
         if needs_root && self.run_mode.is_readonly() {
             self.notification = Some(Notification::failure(
                 "当前为只读模式，需要 root 权限执行此操作".to_string(),
@@ -2165,7 +2202,8 @@ impl AppState {
             ServiceButton::Test
             | ServiceButton::Reload
             | ServiceButton::Status
-            | ServiceButton::CheckUpdate => {
+            | ServiceButton::CheckUpdate
+            | ServiceButton::Upgrade => {
                 self.service.running = Some(btn);
                 self.service.pending_action = Some(btn);
             }

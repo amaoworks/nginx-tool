@@ -1,5 +1,25 @@
 # 变更记录
 
+## 2026-05-07 — 发布更新链路修复与 TUI 自升级
+
+### 背景
+
+安装脚本在 `ngtool --version` 输出带 `v` 前缀时无法解析本地版本，导致云端 Release 更新但本地状态无法可靠对比；TUI 内也只有“检查更新”，没有直接升级当前二进制的能力。同时 `Cargo.toml` 仍停留在旧版本，GitHub Actions 编译日志显示 `Compiling ngtool v1.0.2`。
+
+### 修改清单
+
+- `install.sh`：本地版本解析兼容 `v1.0.4` 和 `1.0.4`；状态检测静默解析 Release asset；无参数菜单检测到可更新时默认项自动切到“更新”。
+- `src/domain/update.rs`：新增 Release asset 解析、架构匹配、ELF 校验和自升级替换当前二进制；版本比较改为只在远端版本更高时提示更新。
+- `src/app/event.rs` / `src/app/state.rs` / `src/main.rs`：新增 `ServiceUpgradeResult` 和“更新 TUI”服务按钮。
+- `src/ui/views/service.rs`：服务控制页增加“更新 TUI”按钮，并在只读模式下禁用。
+- `Cargo.toml` / `Cargo.lock`：package version 升至 `1.0.4`，使 Cargo 编译日志和发布 tag 对齐。
+- `build.rs`：CI 注入的 `v*` tag 标准化为无前缀版本号，统一 `ngtool --version`、UI 检查和备份 manifest。
+
+### 使用说明
+
+- 安装脚本：`curl -fsSL .../install.sh | bash` 仍先展示状态；若检测到已安装组件可更新，直接回车会执行更新。
+- TUI：服务控制页先“检查更新”查看信息，再执行“更新 TUI”；更新完成后退出并重新启动 `ngtool` 生效。
+
 ## 2026-05-07 — 站点管理：删除/证书/日志快捷键功能补齐
 
 ### 背景

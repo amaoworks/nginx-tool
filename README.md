@@ -93,6 +93,9 @@ sudo bash ~/nginx/install.sh update
 # 远程执行
 curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- status
 curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- update
+
+# 无参数远程执行也会先检测状态；检测到已安装组件可更新时，回车默认执行更新
+curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash
 ```
 
 ### 两种模式都做了什么？
@@ -121,6 +124,7 @@ curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.s
 - ✅ 默认无参数执行时会先检测当前安装状态，再进入安装/更新/卸载菜单
 - ✅ `status`：检测当前是否已安装 Shell / TUI 版，并显示版本/更新状态
 - ✅ `update`：更新已安装的 Shell 仓库与 TUI 二进制
+- ✅ 无参数执行时若检测到已安装组件可更新，菜单默认项自动切到 `update`
 - ✅ `uninstall`：自动检测已安装组件并卸载
 
 ### 一键卸载
@@ -225,7 +229,7 @@ ngtool --help                # 命令行参数
 - **证书管理**：按站点关联的证书列表、续期、自动续签状态检查
 - **日志查看**：全局与站点级访问 / 错误日志实时跟踪、暂停 / 清屏 / 搜索
 - **服务控制**：测试配置、重载、重启（确认弹窗）、查看 systemd 状态
-- **版本检查**：在“服务控制”页检查最新 Release，显示当前版本、最新版本与发布页面
+- **版本更新**：在“服务控制”页检查最新 Release，也可直接更新当前 `ngtool` 二进制
 - **备份还原**：限定到 `nginx.conf` + `sites-available/*.conf` + `sites-enabled` 启用关系，含 manifest 与 sha256 校验
 
 更详细的快捷键、配置目录、源码构建说明见 [`tui-next/README.md`](tui-next/README.md)。
@@ -350,8 +354,8 @@ ng new mysite mysite.example.com / --type static --enable --cert
 
 ```bash
 # 本地打 tag 并推送，CI 会自动构建并发布
-git tag v1.0.2
-git push origin v1.0.2
+git tag v1.0.4
+git push origin v1.0.4
 ```
 
 `install.sh` 在 `tui` / `status` / `update` 相关流程里会调用
@@ -360,6 +364,8 @@ git push origin v1.0.2
 
 TUI 的 `--version` 与界面内版本检查使用统一的构建版本号：
 本地在某个 tag 上构建时会自动读取该 tag；CI Release 构建时也会显式注入对应 tag 版本。
+`Cargo.toml` 的 package version 也需要随发布号同步维护，否则 Cargo 编译日志会继续显示旧的
+`Compiling ngtool v...`，即使最终二进制版本已由 tag 注入。
 
 ---
 

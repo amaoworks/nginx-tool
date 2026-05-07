@@ -2,8 +2,8 @@ name: release
 
 # 触发：仅在推送 tag 时构建并发布 TUI 二进制
 # 用法：
-#   git tag v1.0.2
-#   git push origin v1.0.2
+#   git tag v1.0.4
+#   git push origin v1.0.4
 on:
   push:
     tags:

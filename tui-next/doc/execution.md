@@ -463,6 +463,8 @@ P9 出口条件满足。
 | P10-7 | aarch64 交叉编译 | `cargo build --release --target aarch64-unknown-linux-gnu` 产出可在 OrangePi 直接运行的二进制 |
 | P10-8 | 多目标二进制 | 至少提供 `aarch64-unknown-linux-gnu` 和 `x86_64-unknown-linux-gnu` 两份 release 物料 |
 | P10-9 | release 文档 | 发布说明列出已知限制（首版仅 systemd、仅中文、仅 Debian/Ubuntu 目录结构） |
+| P10-10 | TUI 自升级 | 服务控制页可下载当前架构最新 Release asset 并替换当前 `ngtool` 二进制 |
+| P10-11 | 版本号一致性 | `Cargo.toml` package version、CI tag 注入、`ngtool --version` 与安装脚本版本比较保持一致 |
 
 ### 14.4 风险闭环
 
@@ -629,4 +631,3 @@ MVP 完成必须满足：
 *变更记录：*
 - *v0.2: 权重再平衡（P5 +2、P10 +3、P0/P1/P3/P4/P6 各 -1，总和仍为 100）；每阶段补入口/出口条件和风险闭环；新增任务覆盖审计日志、信号处理、单实例锁、CJK 冒烟、aarch64 交叉编译；MVP 明确包含 P5-8 简易证书申请；新增 §21 风险闭环总览*
 - *v0.1: 初版，对齐 design.md v0.5 / architecture.md v0.1*
-

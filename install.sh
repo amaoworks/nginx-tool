@@ -261,7 +261,7 @@ get_tui_installed_version() {
         return 1
     fi
     "$TUI_BIN_PATH" --version 2>/dev/null \
-        | sed -nE 's/.* ([0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?).*/\1/p' \
+        | sed -nE 's/.* v?([0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?).*/\1/p' \
         | head -n1
 }
 
@@ -400,6 +400,12 @@ choose_mode() {
 
 choose_default_action() {
     show_status
+    local default_choice=1
+    local default_hint="默认 1"
+    if [[ "${STATUS_SHELL_UPDATE:-}" == 可更新* ]] || [[ "${STATUS_TUI_UPDATE:-}" == 可更新* ]]; then
+        default_choice=2
+        default_hint="检测到可更新，默认 2"
+    fi
     echo -e "${BOLD}  🎛️  请选择操作${NC}"
     echo ""
     echo -e "    ${CYAN}1)${NC} ${BOLD}安装${NC}   ${DIM}— 安装 Shell 或 TUI${NC}"
@@ -411,8 +417,8 @@ choose_default_action() {
 
     local choice
     while true; do
-        ask_line "  输入序号 [1/2/3/4/5]（默认 1）: " choice
-        choice="${choice:-1}"
+        ask_line "  输入序号 [1/2/3/4/5]（${default_hint}）: " choice
+        choice="${choice:-$default_choice}"
         case "$choice" in
             1|install|i|I)
                 choose_mode
@@ -521,6 +527,7 @@ install_shell() {
 
 # 解析最新 release 的下载 URL
 resolve_tui_asset() {
+    local quiet="${1:-}"
     local asset="ngtool-*-linux-${ARCH}"
     local url=""
 
@@ -547,15 +554,20 @@ resolve_tui_asset() {
     fi
 
     if [ -z "$url" ]; then
-        error "无法解析最新发布版本（API 调用失败或暂无 Release）"
-        echo -e "     请手动访问: ${CYAN}${RELEASE_PAGE}${NC}"
-        exit 1
+        if [ "$quiet" != "quiet" ]; then
+            error "无法解析最新发布版本（API 调用失败或暂无 Release）"
+            echo -e "     请手动访问: ${CYAN}${RELEASE_PAGE}${NC}"
+            exit 1
+        fi
+        return 1
     fi
 
     TUI_DOWNLOAD_URL="$url"
     TUI_ASSET_NAME=$(basename "$url")
     ASSET_VERSION=$(normalize_version "${ASSET_VERSION:-unknown}")
-    success "最新版本: ${BOLD}${ASSET_VERSION:-unknown}${NC} → ${DIM}${TUI_ASSET_NAME}${NC}"
+    if [ "$quiet" != "quiet" ]; then
+        success "最新版本: ${BOLD}${ASSET_VERSION:-unknown}${NC} → ${DIM}${TUI_ASSET_NAME}${NC}"
+    fi
 }
 
 install_tui() {
@@ -657,7 +669,7 @@ show_status() {
 
     if command -v curl &>/dev/null; then
         if detect_arch_soft; then
-            if resolve_tui_asset 2>/dev/null; then
+            if resolve_tui_asset quiet 2>/dev/null; then
                 latest_tui="${ASSET_VERSION:-未知}"
             else
                 latest_lookup_error="无法获取最新 Release 信息"
@@ -718,6 +730,9 @@ show_status() {
     if [ -n "$latest_lookup_error" ]; then
         warn "$latest_lookup_error"
     fi
+
+    STATUS_SHELL_UPDATE="$shell_update"
+    STATUS_TUI_UPDATE="$tui_update"
 
     echo ""
 }
