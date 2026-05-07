@@ -228,6 +228,86 @@ pub async fn list_sites(ctx: Arc<AppContext>) -> Result<Vec<Site>, NgToolError> 
     Ok(sites)
 }
 
+/// 删除站点：若已启用则先停用 → 删除 sites-available 配置文件 → nginx -t → reload。
+/// 任一步失败时中止（已停用的不自动恢复，已删除的文件不可恢复）。
+pub async fn delete_site(ctx: Arc<AppContext>, name: &str) -> Result<(), NgToolError> {
+    let started = Instant::now();
+    let conf_name = format!("{}.conf", name);
+    let avail_path = ctx.probe.sites_available.join(&conf_name);
+    let link_path = ctx.probe.sites_enabled.join(&conf_name);
+
+    if !avail_path.exists() {
+        return Err(NgToolError::FileOperationFailed {
+            path: avail_path,
+            message: "站点配置不存在".into(),
+        });
+    }
+
+    // 若已启用：先停用（删链接 + nginx -t + reload）
+    if link_path.symlink_metadata().is_ok() {
+        disable(ctx.clone(), name).await?;
+    }
+
+    // 删除配置文件
+    let ap = avail_path.clone();
+    if let Err(e) = tokio::task::spawn_blocking(move || std::fs::remove_file(&ap))
+        .await
+        .map_err(|e| NgToolError::FileOperationFailed {
+            path: avail_path.clone(),
+            message: format!("任务异常：{}", e),
+        })?
+    {
+        log_audit(
+            &ctx,
+            "site.delete",
+            name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "remove_config", "error": e.to_string()}),
+        );
+        return Err(NgToolError::FileOperationFailed {
+            path: avail_path,
+            message: e.to_string(),
+        });
+    }
+
+    // nginx -t（配置已删除，确保剩余配置仍合法）
+    if let Err(e) = ctx.nginx.test_config().await {
+        log_audit(
+            &ctx,
+            "site.delete",
+            name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "test", "error": e.to_string()}),
+        );
+        return Err(e);
+    }
+
+    // reload
+    if let Err(e) = ctx.systemd.reload("nginx").await {
+        log_audit(
+            &ctx,
+            "site.delete",
+            name,
+            AuditResult::Failure,
+            started,
+            json!({"stage": "reload", "error": e.to_string()}),
+        );
+        return Err(e);
+    }
+
+    log_audit(
+        &ctx,
+        "site.delete",
+        name,
+        AuditResult::Success,
+        started,
+        json!({}),
+    );
+    Ok(())
+}
+
 /// 启用站点：建链接 → nginx -t → reload。任一步失败按反向次序回滚。
 /// 详见 architecture.md §15.3 启用流程。
 pub async fn enable(ctx: Arc<AppContext>, name: &str) -> Result<(), NgToolError> {

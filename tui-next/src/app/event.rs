@@ -87,4 +87,10 @@ pub enum AppEvent {
 
     /// 还原备份完成
     BackupRestoreResult(Box<Result<RestoreOutcome, NgToolError>>),
+
+    /// 删除站点完成
+    SiteDeleteResult {
+        site_name: String,
+        result: Box<Result<(), NgToolError>>,
+    },
 }

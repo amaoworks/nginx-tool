@@ -1,5 +1,42 @@
 # 变更记录
 
+## 2026-05-07 — 站点管理：删除/证书/日志快捷键功能补齐
+
+### 背景
+
+站点管理页面底部提示栏显示 `[d] 删除` `[c] 证书` `[l] 日志` 三个快捷键，但按键事件未实现，按下后无响应。用户无法从站点列表直接执行删除、申请证书或查看日志。
+
+### 修改清单
+
+#### 领域层：新增 `delete_site` 函数
+- `src/domain/site.rs`：新增 `delete_site(ctx, name)` —— 若站点已启用则先停用，再删除 `sites-available` 配置文件，最后 `nginx -t` + reload。删除前不自动恢复已停用状态，删除后不可恢复。
+- 审计日志动作标识：`site.delete`。
+
+#### 事件层：新增 `SiteDeleteResult` 事件
+- `src/app/event.rs`：新增 `SiteDeleteResult { site_name, result }` 变体。
+
+#### 状态层：补齐按键处理
+- `src/app/state.rs`：
+  - `SitesState` 新增 `pending_delete: Option<String>` 字段
+  - `handle_key` 中 `Route::Sites(SitesRoute::List)` 新增三个按键分支：
+    - `d` → 弹出确认删除弹窗（`ModalAction::DeleteSite`）
+    - `c` → 为当前站点申请证书并跳转到证书管理页
+    - `l` → 跳转到日志查看页，自动选中当前站点的访问日志
+  - `request_site_delete()` / `request_cert_for_current_site()` / `goto_site_log()` 三个新方法
+  - `execute_modal_action` 处理 `DeleteSite`：设置 `action_in_flight` + `pending_delete`
+  - `handle_event` 处理 `SiteDeleteResult`：清除 `action_in_flight`、通知、刷新列表
+
+#### 弹窗层：新增 `DeleteSite` 确认动作
+- `src/ui/modal.rs`：`ModalAction` 新增 `DeleteSite { site_name: String }` 变体。
+
+#### 主循环：异步派发删除任务
+- `src/main.rs`：新增 `take_site_delete_request` 消费分支，派发 `domain::site::delete_site` 异步任务。
+
+### 不变更的部分
+
+- 站点列表 `[n] 新建` `[e] 编辑` `[Enter] 启停` `[r] 刷新` 行为不变。
+- 证书页、日志页自身按键逻辑不变。
+
 ## 2026-05-06 — Tab / Esc 焦点切换语义修订（design v0.7）
 
 ### 背景

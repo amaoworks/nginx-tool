@@ -176,6 +176,20 @@ async fn run(terminal: &mut Tui, ctx: Arc<AppContext>) -> anyhow::Result<()> {
             });
         }
 
+        // 派发待执行的异步意图：删除站点
+        if let Some(site_name) = state.take_site_delete_request() {
+            let ctx_clone = ctx.clone();
+            let tx_clone = task_tx.clone();
+            let name = site_name.clone();
+            tokio::spawn(async move {
+                let result = domain::site::delete_site(ctx_clone, &name).await;
+                let _ = tx_clone.send(AppEvent::SiteDeleteResult {
+                    site_name: name,
+                    result: Box::new(result),
+                });
+            });
+        }
+
         // 派发待执行的异步意图：服务控制
         if let Some(btn) = state.take_service_action() {
             use crate::app::state::ServiceButton;

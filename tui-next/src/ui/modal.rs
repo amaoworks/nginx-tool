@@ -32,6 +32,8 @@ pub enum ModalAction {
     DeleteBackup(std::path::PathBuf),
     /// 确认还原指定备份
     RestoreBackup(std::path::PathBuf),
+    /// 确认删除指定站点
+    DeleteSite { site_name: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

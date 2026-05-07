@@ -136,6 +136,8 @@ pub struct SitesState {
     pub last_error: Option<String>,
     /// 待派发的启停请求（站点名 + 目标启用状态）
     pub pending_toggle: Option<(String, bool)>,
+    /// 待派发的删除请求（站点名）
+    pub pending_delete: Option<String>,
 }
 
 impl SitesState {
@@ -1294,6 +1296,25 @@ impl AppState {
                     }
                 }
             }
+            AppEvent::SiteDeleteResult { site_name, result } => {
+                self.sites.action_in_flight = None;
+                match *result {
+                    Ok(()) => {
+                        self.notification = Some(Notification::success(format!(
+                            "站点 {} 已删除",
+                            site_name
+                        )));
+                        self.sites.pending_refresh = true;
+                    }
+                    Err(e) => {
+                        self.notification = Some(Notification::failure(format!(
+                            "删除失败：{}",
+                            e
+                        )));
+                        self.sites.pending_refresh = true;
+                    }
+                }
+            }
             AppEvent::ServiceTestResult(b) => {
                 self.service.running = None;
                 match *b {
@@ -1688,6 +1709,11 @@ impl AppState {
         self.sites.pending_toggle.take()
     }
 
+    /// 主循环消费：取出待删除站点请求
+    pub fn take_site_delete_request(&mut self) -> Option<String> {
+        self.sites.pending_delete.take()
+    }
+
     /// 当前焦点是否落在"文本输入字段"上。用于在 handle_key 顶部判断
     /// 是否应当让全局快捷键（q 退出 / 1-6 跳菜单）让位给字面输入。
     /// 详见 doc/design.md §五，全局快捷键不应吞掉用户在输入框里键入的字符。
@@ -1799,6 +1825,18 @@ impl AppState {
                 }
                 KeyCode::Char('e') => {
                     self.enter_site_edit();
+                    return;
+                }
+                KeyCode::Char('d') => {
+                    self.request_site_delete();
+                    return;
+                }
+                KeyCode::Char('c') => {
+                    self.request_cert_for_current_site();
+                    return;
+                }
+                KeyCode::Char('l') => {
+                    self.goto_site_log();
                     return;
                 }
                 _ => {}
@@ -1963,6 +2001,10 @@ impl AppState {
             ModalAction::RestoreBackup(p) => {
                 self.backup.pending_restore = Some(p);
             }
+            ModalAction::DeleteSite { site_name } => {
+                self.sites.action_in_flight = Some(site_name.clone());
+                self.sites.pending_delete = Some(site_name);
+            }
         }
     }
 
@@ -2015,6 +2057,71 @@ impl AppState {
         if !matches!(prev_route, Route::Backup) && matches!(self.route, Route::Backup) {
             self.backup.pending_refresh = true;
         }
+    }
+
+    fn request_site_delete(&mut self) {
+        if self.run_mode.is_readonly() {
+            self.notification = Some(Notification::failure(
+                "当前为只读模式，需要 root 权限执行此操作".to_string(),
+            ));
+            return;
+        }
+        if self.sites.action_in_flight.is_some() {
+            return;
+        }
+        let Some(site) = self.sites.current() else {
+            return;
+        };
+        let name = site.name.clone();
+        self.modal = Some(Modal::confirm(
+            "⚠️  确认删除站点",
+            vec![
+                format!("即将删除站点 {} 的配置文件。", name),
+                "该操作不可撤销。".into(),
+                "确认删除？".into(),
+            ],
+            "确认删除",
+            crate::ui::modal::ModalAction::DeleteSite { site_name: name },
+        ));
+    }
+
+    /// 按 c 键：为当前选中站点申请证书，跳转到证书页
+    fn request_cert_for_current_site(&mut self) {
+        let Some(site) = self.sites.current() else {
+            self.notification = Some(Notification::info("请先选中一个站点".to_string()));
+            return;
+        };
+        if site.all_domains.is_empty() {
+            self.notification = Some(Notification::failure(
+                "该站点没有配置域名，无法申请证书".to_string(),
+            ));
+            return;
+        }
+        let site_name = site.name.clone();
+        let domains = site.all_domains.clone();
+        self.certs.pending_request = Some((site_name.clone(), domains.clone()));
+        self.route = Route::Certs;
+        self.focus = FocusArea::Content;
+        self.certs.pending_refresh = true;
+        self.certs.running = Some(crate::app::state::CertsAction::Request);
+    }
+
+    /// 按 l 键：跳转到日志页，自动选中当前站点的日志
+    fn goto_site_log(&mut self) {
+        let Some(site) = self.sites.current() else {
+            self.notification = Some(Notification::info("请先选中一个站点".to_string()));
+            return;
+        };
+        let name = site.name.clone();
+        self.logs.source = crate::domain::log::LogSource::Site {
+            name,
+            kind: crate::domain::log::LogKind::Access,
+        };
+        self.logs.clear_buffer();
+        self.logs.pending_tail_change = true;
+        self.route = Route::Logs;
+        self.focus = FocusArea::Content;
+        self.logs.focused = crate::app::state::LogsFocus::LogContent;
     }
 
     fn request_site_toggle(&mut self) {
