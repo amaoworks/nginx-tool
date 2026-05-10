@@ -79,6 +79,9 @@ pub enum AppEvent {
     /// 证书页：仅自动续签状态刷新
     CertAutoRenewResult(Box<crate::domain::cert::AutoRenewStatus>),
 
+    /// 证书页：安装 deploy hook 结果
+    CertInstallHookResult(Box<Result<(), NgToolError>>),
+
     /// 备份列表加载完成
     BackupListLoaded(Box<Result<Vec<Backup>, String>>),
 

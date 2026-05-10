@@ -219,11 +219,16 @@ async fn run(terminal: &mut Tui, ctx: Arc<AppContext>) -> anyhow::Result<()> {
                         let r = domain::update::check_latest_release().await;
                         let _ = tx_clone.send(AppEvent::ServiceUpdateCheckResult(Box::new(r)));
                     }
-                    ServiceButton::Upgrade => {
-                        let r = domain::update::upgrade_to_latest_release().await;
-                        let _ = tx_clone.send(AppEvent::ServiceUpgradeResult(Box::new(r)));
-                    }
                 }
+            });
+        }
+
+        // 派发弹窗确认后的 TUI 升级
+        if state.take_service_upgrade() {
+            let tx_clone = task_tx.clone();
+            tokio::spawn(async move {
+                let r = domain::update::upgrade_to_latest_release().await;
+                let _ = tx_clone.send(AppEvent::ServiceUpgradeResult(Box::new(r)));
             });
         }
 
@@ -296,6 +301,14 @@ async fn run(terminal: &mut Tui, ctx: Arc<AppContext>) -> anyhow::Result<()> {
             tokio::spawn(async move {
                 let status = domain::cert::check_auto_renew(ctx_clone).await;
                 let _ = tx_clone.send(AppEvent::CertAutoRenewResult(Box::new(status)));
+            });
+        }
+
+        if state.take_cert_install_hook() {
+            let tx_clone = task_tx.clone();
+            tokio::spawn(async move {
+                let result = domain::cert::install_deploy_hook();
+                let _ = tx_clone.send(AppEvent::CertInstallHookResult(Box::new(result)));
             });
         }
 

@@ -36,6 +36,10 @@ pub enum ModalAction {
     DeleteSite {
         site_name: String,
     },
+    /// 确认更新 TUI 自身
+    UpgradeTui,
+    /// 确认安装 deploy hook
+    InstallDeployHook,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +117,33 @@ impl Modal {
             vec!["有尚未保存的修改。".into(), "确认离开编辑页面？".into()],
             "放弃",
             ModalAction::DiscardSiteEdit,
+        )
+    }
+
+    pub fn confirm_upgrade_tui(current: &str, latest: &str) -> Self {
+        Self::confirm(
+            "⬆ 更新 TUI",
+            vec![
+                format!("当前版本：{}", current),
+                format!("最新版本：{}", latest),
+                "".into(),
+                "将下载并替换当前二进制，更新后需重启 ngtool。".into(),
+            ],
+            "确认更新",
+            ModalAction::UpgradeTui,
+        )
+    }
+
+    pub fn confirm_install_deploy_hook() -> Self {
+        Self::confirm(
+            "🔧 安装 deploy hook",
+            vec![
+                "将在 /etc/letsencrypt/renewal-hooks/deploy/ 下创建".into(),
+                "reload-nginx.sh 脚本，确保证书续期后自动重载 Nginx。".into(),
+                "需要 root 权限。".into(),
+            ],
+            "确认安装",
+            ModalAction::InstallDeployHook,
         )
     }
 

@@ -207,23 +207,37 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
     let readonly = state.run_mode.is_readonly() || !state.ctx.deps().certbot;
 
     let cols = Layout::horizontal([
-        Constraint::Percentage(33),
-        Constraint::Percentage(33),
-        Constraint::Percentage(34),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
     ])
     .split(chunks[1]);
 
     for (i, action) in CertsAction::ALL.iter().enumerate() {
         let focused = buttons_focused && state.certs.action_focus == *action;
         let busy = state.certs.running == Some(*action);
-        let disabled = readonly && matches!(action, CertsAction::Request | CertsAction::RenewAll);
+        let disabled = readonly
+            && matches!(
+                action,
+                CertsAction::Request | CertsAction::RenewAll | CertsAction::InstallDeployHook
+            );
+        // 钩子已安装时显示为已就绪，不可点击
+        let hook_ok = matches!(action, CertsAction::InstallDeployHook)
+            && state
+                .certs
+                .auto_renew
+                .as_ref()
+                .is_some_and(|s| s.deploy_hook_present);
 
         let label = if busy {
             format!("[ {}（执行中）]", action.label())
+        } else if hook_ok {
+            "[ ✓ 钩子已就绪 ]".to_string()
         } else {
             format!("[ {} ]", action.label())
         };
-        let style = if disabled {
+        let style = if disabled || hook_ok {
             Style::default()
                 .fg(theme::FG_DIM)
                 .add_modifier(Modifier::DIM)

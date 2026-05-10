@@ -3,6 +3,7 @@
 //! 数据来源：`certbot certificates` 输出文本解析；解析失败保留原始输出（R2 闭环）。
 //! 关联站点：基于 server_name 与证书 Domains 字段交叉匹配。
 
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -366,10 +367,7 @@ impl AutoRenewStatus {
             ));
         }
         if !self.deploy_hook_present {
-            tips.push(format!(
-                "添加 reload-nginx 钩子：sudo install -m 755 hook.sh {}",
-                self.deploy_hook_path
-            ));
+            tips.push("点击 [安装 deploy hook] 按钮自动创建钩子脚本".into());
         }
         tips
     }
@@ -476,6 +474,29 @@ pub async fn check_auto_renew(ctx: Arc<AppContext>) -> AutoRenewStatus {
         deploy_hook_present,
         last_check_error,
     }
+}
+
+/// 安装 certbot deploy hook，确保证书续期后自动重载 Nginx。
+pub fn install_deploy_hook() -> Result<(), NgToolError> {
+    let path = std::path::Path::new("/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| NgToolError::FileOperationFailed {
+            path: parent.to_path_buf(),
+            message: e.to_string(),
+        })?;
+    }
+    let script = "#!/bin/sh\nnginx -t && systemctl reload nginx\n";
+    std::fs::write(path, script).map_err(|e| NgToolError::FileOperationFailed {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|e| {
+        NgToolError::FileOperationFailed {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        }
+    })?;
+    Ok(())
 }
 
 /// 从 `systemctl list-timers` 输出解析 NEXT 列。

@@ -170,17 +170,15 @@ pub enum ServiceButton {
     Restart,
     Status,
     CheckUpdate,
-    Upgrade,
 }
 
 impl ServiceButton {
-    pub const ALL: [ServiceButton; 6] = [
+    pub const ALL: [ServiceButton; 5] = [
         ServiceButton::Test,
         ServiceButton::Reload,
         ServiceButton::Restart,
         ServiceButton::Status,
         ServiceButton::CheckUpdate,
-        ServiceButton::Upgrade,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -190,7 +188,6 @@ impl ServiceButton {
             ServiceButton::Restart => "重启服务 ⚠",
             ServiceButton::Status => "查看状态",
             ServiceButton::CheckUpdate => "检查更新",
-            ServiceButton::Upgrade => "更新 TUI",
         }
     }
 }
@@ -214,13 +211,15 @@ pub enum CertsAction {
     Request,
     RenewAll,
     CheckAutoRenew,
+    InstallDeployHook,
 }
 
 impl CertsAction {
-    pub const ALL: [CertsAction; 3] = [
+    pub const ALL: [CertsAction; 4] = [
         CertsAction::Request,
         CertsAction::RenewAll,
         CertsAction::CheckAutoRenew,
+        CertsAction::InstallDeployHook,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -228,6 +227,7 @@ impl CertsAction {
             CertsAction::Request => "申请新证书",
             CertsAction::RenewAll => "续期所有证书",
             CertsAction::CheckAutoRenew => "检查自动续签",
+            CertsAction::InstallDeployHook => "安装 deploy hook",
         }
     }
 }
@@ -259,6 +259,8 @@ pub struct CertsState {
     pub pending_renew: bool,
     /// 待派发：自动续签检查
     pub pending_check_renew: bool,
+    /// 待派发：安装 deploy hook
+    pub pending_install_hook: bool,
 }
 
 impl CertsState {
@@ -369,6 +371,8 @@ pub struct ServiceState {
     pub update_info: Option<UpdateInfo>,
     /// 待派发的操作意图
     pub pending_action: Option<ServiceButton>,
+    /// 弹窗确认后的升级意图
+    pub pending_upgrade: bool,
 }
 
 /// 站点类型选项
@@ -1384,11 +1388,15 @@ impl AppState {
                                 .push_output([format!("发布时间：{}", published_at)]);
                         }
                         self.service.update_info = Some(info.clone());
-                        self.notification = Some(Notification::success(if info.has_update {
-                            "检测到新版本".to_string()
+                        if info.has_update {
+                            self.modal = Some(crate::ui::modal::Modal::confirm_upgrade_tui(
+                                &info.current_version,
+                                &info.latest_version,
+                            ));
                         } else {
-                            "当前已是最新版本".to_string()
-                        }));
+                            self.notification =
+                                Some(Notification::success("当前已是最新版本".to_string()));
+                        }
                     }
                     Err(e) => {
                         self.service.push_output(["── 版本检查失败 ──".into()]);
@@ -1563,6 +1571,30 @@ impl AppState {
                     self.certs.push_output([format!("• {}", tip)]);
                 }
                 self.certs.auto_renew = Some(status);
+            }
+            AppEvent::CertInstallHookResult(b) => {
+                self.certs.running = None;
+                match *b {
+                    Ok(()) => {
+                        self.certs.push_output([
+                            "── 安装 deploy hook ──".into(),
+                            "已创建 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh".into(),
+                        ]);
+                        self.notification =
+                            Some(Notification::success("deploy hook 安装成功".to_string()));
+                        // 立即刷新自动续签状态以更新 UI
+                        self.certs.pending_refresh = true;
+                    }
+                    Err(e) => {
+                        self.certs.push_output([
+                            "── 安装 deploy hook 失败 ──".into(),
+                        ]);
+                        self.certs
+                            .push_output(e.to_string().lines().map(String::from));
+                        self.notification =
+                            Some(Notification::failure("deploy hook 安装失败".to_string()));
+                    }
+                }
             }
             AppEvent::BackupListLoaded(b) => {
                 self.backup.refreshing = false;
@@ -2005,6 +2037,27 @@ impl AppState {
                 self.service.pending_action = Some(ServiceButton::Restart);
                 self.service.running = Some(ServiceButton::Restart);
             }
+            ModalAction::UpgradeTui => {
+                if self.run_mode.is_readonly() {
+                    self.notification = Some(Notification::failure(
+                        "当前为只读模式，无法更新 TUI".to_string(),
+                    ));
+                    return;
+                }
+                // 使用一个特殊的 pending_action 值来标记升级
+                self.service.pending_upgrade = true;
+                self.service.running = Some(ServiceButton::CheckUpdate);
+            }
+            ModalAction::InstallDeployHook => {
+                if self.run_mode.is_readonly() {
+                    self.notification = Some(Notification::failure(
+                        "当前为只读模式，需要 root 权限执行此操作".to_string(),
+                    ));
+                    return;
+                }
+                self.certs.pending_install_hook = true;
+                self.certs.running = Some(crate::app::state::CertsAction::InstallDeployHook);
+            }
             ModalAction::DiscardSiteForm => {
                 self.site_form = SiteFormState::default();
                 self.route = Route::Sites(SitesRoute::List);
@@ -2177,11 +2230,7 @@ impl AppState {
             return;
         }
         let btn = self.service.focused;
-        // 只读裁剪：reload / restart 在只读模式下被禁用
-        let needs_root = matches!(
-            btn,
-            ServiceButton::Reload | ServiceButton::Restart | ServiceButton::Upgrade
-        );
+        let needs_root = matches!(btn, ServiceButton::Reload | ServiceButton::Restart);
         if needs_root && self.run_mode.is_readonly() {
             self.notification = Some(Notification::failure(
                 "当前为只读模式，需要 root 权限执行此操作".to_string(),
@@ -2190,14 +2239,12 @@ impl AppState {
         }
         match btn {
             ServiceButton::Restart => {
-                // 高危：先弹确认
                 self.modal = Some(Modal::confirm_restart_nginx());
             }
             ServiceButton::Test
             | ServiceButton::Reload
             | ServiceButton::Status
-            | ServiceButton::CheckUpdate
-            | ServiceButton::Upgrade => {
+            | ServiceButton::CheckUpdate => {
                 self.service.running = Some(btn);
                 self.service.pending_action = Some(btn);
             }
@@ -2206,6 +2253,15 @@ impl AppState {
 
     pub fn take_service_action(&mut self) -> Option<ServiceButton> {
         self.service.pending_action.take()
+    }
+
+    pub fn take_service_upgrade(&mut self) -> bool {
+        if self.service.pending_upgrade {
+            self.service.pending_upgrade = false;
+            true
+        } else {
+            false
+        }
     }
 
     fn move_menu(&mut self, delta: i32) {
@@ -3461,6 +3517,25 @@ impl AppState {
             CertsAction::CheckAutoRenew => {
                 self.certs.pending_check_renew = true;
             }
+            CertsAction::InstallDeployHook => {
+                if self.run_mode.is_readonly() {
+                    self.notification = Some(Notification::failure(
+                        "当前为只读模式，需要 root 权限执行此操作".to_string(),
+                    ));
+                    return;
+                }
+                if self
+                    .certs
+                    .auto_renew
+                    .as_ref()
+                    .is_some_and(|s| s.deploy_hook_present)
+                {
+                    self.notification =
+                        Some(Notification::info("deploy hook 已安装".to_string()));
+                    return;
+                }
+                self.modal = Some(crate::ui::modal::Modal::confirm_install_deploy_hook());
+            }
         }
     }
 
@@ -3509,6 +3584,16 @@ impl AppState {
         if self.certs.pending_check_renew {
             self.certs.pending_check_renew = false;
             self.certs.running = Some(CertsAction::CheckAutoRenew);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 主循环消费：取出安装 deploy hook 请求
+    pub fn take_cert_install_hook(&mut self) -> bool {
+        if self.certs.pending_install_hook {
+            self.certs.pending_install_hook = false;
             true
         } else {
             false

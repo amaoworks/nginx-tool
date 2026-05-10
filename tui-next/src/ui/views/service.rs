@@ -86,12 +86,11 @@ fn render_summary(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_buttons(frame: &mut Frame, area: Rect, state: &AppState) {
     let cols = Layout::horizontal([
-        Constraint::Percentage(17),
-        Constraint::Percentage(17),
-        Constraint::Percentage(17),
-        Constraint::Percentage(17),
-        Constraint::Percentage(16),
-        Constraint::Percentage(16),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
     ])
     .split(area);
 
@@ -100,10 +99,7 @@ fn render_buttons(frame: &mut Frame, area: Rect, state: &AppState) {
         let focused = state.service.focused == *btn;
         let busy = state.service.running == Some(*btn);
         let disabled = readonly
-            && matches!(
-                btn,
-                ServiceButton::Reload | ServiceButton::Restart | ServiceButton::Upgrade
-            );
+            && matches!(btn, ServiceButton::Reload | ServiceButton::Restart);
         let label = if busy {
             format!("[ {}（执行中）]", btn.label())
         } else {
