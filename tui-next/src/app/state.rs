@@ -446,19 +446,13 @@ impl SiteFormState {
             .position(|f| *f == self.focused)
             .map(|x| x as i32)
             .unwrap_or(0);
-        // 静态站点时跳过 Target 字段
-        let next_idx =
-            if self.site_type == SiteTypeChoice::Static && self.focused == FormField::Target {
-                if delta > 0 {
-                    // 向后跳到 EnableCheckbox
-                    (cur + 2).rem_euclid(len) as usize
-                } else {
-                    // 向前跳到 SiteType
-                    (cur - 1).rem_euclid(len) as usize
-                }
-            } else {
-                (cur + delta).rem_euclid(len) as usize
-            };
+        let mut next_idx = (cur + delta).rem_euclid(len) as usize;
+        // 静态站点时跳过 Target 字段（检查目标而非当前位置）
+        if self.site_type == SiteTypeChoice::Static
+            && FormField::ORDER[next_idx] == FormField::Target
+        {
+            next_idx = (cur + delta * 2).rem_euclid(len) as usize;
+        }
         self.focused = FormField::ORDER[next_idx];
     }
 
@@ -1778,20 +1772,20 @@ impl AppState {
             return self.handle_modal_key(k);
         }
 
-        // Ctrl+C：硬退出（无视输入状态，保持终端通用语义）
+        // Ctrl+C：弹出退出确认弹窗
         if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('c')) {
-            self.should_quit = true;
+            self.modal = Some(Modal::confirm_quit());
             return;
         }
 
         let in_text_input = self.is_in_text_input();
 
-        // q：软退出。在文本输入字段中应当作为字面字符传递，不走退出路径。
+        // q：弹出退出确认弹窗（文本输入中仍作为字面字符传递）
         if !in_text_input
             && k.modifiers == KeyModifiers::NONE
             && matches!(k.code, KeyCode::Char('q'))
         {
-            self.should_quit = true;
+            self.modal = Some(Modal::confirm_quit());
             return;
         }
 
@@ -2271,7 +2265,22 @@ impl AppState {
             return;
         }
 
-        // 上下键: 类型选择器切换 / 字段切换
+        // 上下键：字段间导航（SiteType 焦点留给下方类型切换逻辑）
+        if k.modifiers == KeyModifiers::NONE && self.site_form.focused != FormField::SiteType {
+            match k.code {
+                KeyCode::Up => {
+                    self.site_form.move_focus(-1);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.site_form.move_focus(1);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // 上下键: 类型选择器切换
         if k.modifiers == KeyModifiers::NONE && self.site_form.focused == FormField::SiteType {
             match k.code {
                 KeyCode::Up => self.site_form.toggle_site_type(-1),
@@ -2456,6 +2465,26 @@ impl AppState {
         if k.modifiers.contains(KeyModifiers::SHIFT) && matches!(k.code, KeyCode::Tab) {
             self.site_edit.move_focus_backward();
             return;
+        }
+
+        // 上下键：焦点切换（TemplateList 和 SlotSelector 有自己的方向键行为）
+        if k.modifiers == KeyModifiers::NONE
+            && !matches!(
+                self.site_edit.focused,
+                EditFocus::TemplateList | EditFocus::SlotSelector
+            )
+        {
+            match k.code {
+                KeyCode::Up => {
+                    self.site_edit.move_focus_backward();
+                    return;
+                }
+                KeyCode::Down => {
+                    self.site_edit.move_focus_forward();
+                    return;
+                }
+                _ => {}
+            }
         }
 
         // o: 切换到原始配置模式
