@@ -1,6 +1,6 @@
 [package]
 name = "ngtool"
-version = "1.0.4"
+version = "1.0.6"
 edition = "2021"
 rust-version = "1.75"
 description = "Nginx-Tools TUI - 交互式 Nginx 站点管理工具"

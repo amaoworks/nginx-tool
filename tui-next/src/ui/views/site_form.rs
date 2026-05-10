@@ -56,6 +56,28 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
     lines.push(Line::from(""));
 
+    // 附加域名
+    let aliases_focused = form.focused == FormField::DomainAliases;
+    let aliases_error = form.get_error("domain_aliases");
+    lines.push(field_label("附加域名:", aliases_focused));
+    lines.push(input_field(
+        &form.domain_aliases,
+        aliases_focused,
+        "www.example.com, m.example.com（可选，逗号分隔）",
+    ));
+    if let Some(err) = aliases_error {
+        lines.push(Line::from(Span::styled(
+            format!("  ⚠ {}", err),
+            Style::default().fg(theme::FG_ERR),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  可选，nginx server_name 附加域名",
+            Style::default().fg(theme::FG_DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+
     // 站点类型
     let type_focused = form.focused == FormField::SiteType;
     lines.push(field_label("站点类型:", type_focused));

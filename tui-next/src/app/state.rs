@@ -405,6 +405,7 @@ pub enum FormField {
     #[default]
     SiteName,
     Domain,
+    DomainAliases,
     SiteType,
     Target,
     EnableCheckbox,
@@ -413,9 +414,10 @@ pub enum FormField {
 }
 
 impl FormField {
-    pub const ORDER: [FormField; 7] = [
+    pub const ORDER: [FormField; 8] = [
         FormField::SiteName,
         FormField::Domain,
+        FormField::DomainAliases,
         FormField::SiteType,
         FormField::Target,
         FormField::EnableCheckbox,
@@ -429,6 +431,7 @@ impl FormField {
 pub struct SiteFormState {
     pub site_name: String,
     pub domain: String,
+    pub domain_aliases: String,
     pub site_type: SiteTypeChoice,
     pub target: String,
     pub enable_now: bool,
@@ -501,6 +504,14 @@ impl SiteFormState {
             self.set_error("domain", e);
         }
 
+        // 附加域名（逗号或空格分隔的多个域名，逐个验证）
+        for alias in split_aliases(&self.domain_aliases) {
+            if let Err(e) = crate::template::renderer::validate_domain(alias) {
+                self.set_error("domain_aliases", format!("附加域名 '{}': {}", alias, e));
+                break;
+            }
+        }
+
         // 代理目标（非静态站点）
         if self.site_type != SiteTypeChoice::Static {
             if self.target.trim().is_empty() {
@@ -528,9 +539,14 @@ impl SiteFormState {
 
         let (upstream_scheme, upstream_target) = target_parsed.unwrap_or_default();
 
+        // 规范化别名：逗号/空格分隔 → 空格连接（兼容 nginx server_name 语法）
+        let aliases = self.domain_aliases.trim().to_string();
+        let aliases_normalized = split_aliases(&aliases).join(" ");
+
         Some(crate::domain::site::CreateSiteInput {
             name: self.site_name.trim().to_string(),
             domain: self.domain.trim().to_string(),
+            domain_aliases: aliases_normalized,
             kind: match self.site_type {
                 SiteTypeChoice::Proxy => crate::template::renderer::SiteKind::Proxy,
                 SiteTypeChoice::Emby => crate::template::renderer::SiteKind::Emby,
@@ -547,6 +563,15 @@ impl SiteFormState {
             request_cert: self.request_cert,
         })
     }
+}
+
+/// 切分逗号或空格分隔的域名字符串，返回非空域名列表。
+fn split_aliases(input: &str) -> Vec<&str> {
+    input
+        .split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 impl ServiceState {
@@ -919,6 +944,7 @@ impl SiteEditState {
         crate::template::renderer::RenderParams {
             site_name: self.site_name.clone(),
             domain_name: self.domain.trim().to_string(),
+            domain_aliases: String::new(),
             upstream_scheme,
             upstream_target,
             static_root: self.static_root.clone(),
@@ -2383,12 +2409,13 @@ impl AppState {
         // 文本输入处理
         if k.modifiers == KeyModifiers::NONE || k.modifiers.contains(KeyModifiers::SHIFT) {
             match self.site_form.focused {
-                FormField::SiteName | FormField::Domain | FormField::Target => {
+                FormField::SiteName | FormField::Domain | FormField::DomainAliases | FormField::Target => {
                     match k.code {
                         KeyCode::Char(c) => {
                             let field = match self.site_form.focused {
                                 FormField::SiteName => &mut self.site_form.site_name,
                                 FormField::Domain => &mut self.site_form.domain,
+                                FormField::DomainAliases => &mut self.site_form.domain_aliases,
                                 FormField::Target => &mut self.site_form.target,
                                 _ => return,
                             };
@@ -2397,6 +2424,7 @@ impl AppState {
                             let key = match self.site_form.focused {
                                 FormField::SiteName => "site_name",
                                 FormField::Domain => "domain",
+                                FormField::DomainAliases => "domain_aliases",
                                 FormField::Target => "target",
                                 _ => "",
                             };
@@ -2406,6 +2434,7 @@ impl AppState {
                             let field = match self.site_form.focused {
                                 FormField::SiteName => &mut self.site_form.site_name,
                                 FormField::Domain => &mut self.site_form.domain,
+                                FormField::DomainAliases => &mut self.site_form.domain_aliases,
                                 FormField::Target => &mut self.site_form.target,
                                 _ => return,
                             };

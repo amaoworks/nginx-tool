@@ -493,6 +493,7 @@ fn log_audit(
 pub struct CreateSiteInput {
     pub name: String,
     pub domain: String,
+    pub domain_aliases: String,
     pub kind: crate::template::renderer::SiteKind,
     pub upstream_scheme: String,
     pub upstream_target: String,
@@ -537,6 +538,7 @@ pub async fn create_site(
     let params = crate::template::renderer::RenderParams {
         site_name: input.name.clone(),
         domain_name: input.domain.clone(),
+        domain_aliases: input.domain_aliases.clone(),
         upstream_scheme: input.upstream_scheme.clone(),
         upstream_target: input.upstream_target.clone(),
         static_root: input.static_root.clone(),

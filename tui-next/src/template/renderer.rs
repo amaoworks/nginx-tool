@@ -22,6 +22,8 @@ pub struct RenderParams {
     pub site_name: String,
     /// server_name 指令内容（域名）
     pub domain_name: String,
+    /// 附加域名（空格分隔），用于 server_name 多域名
+    pub domain_aliases: String,
     /// 上游协议 http / https（仅代理/Emby）
     pub upstream_scheme: String,
     /// 上游目标地址（仅代理/Emby）
@@ -41,6 +43,7 @@ impl Default for RenderParams {
         Self {
             site_name: String::new(),
             domain_name: String::new(),
+            domain_aliases: String::new(),
             upstream_scheme: "http".into(),
             upstream_target: String::new(),
             static_root: String::new(),
@@ -77,6 +80,7 @@ pub fn render(kind: SiteKind, params: &RenderParams) -> Result<String, String> {
 
     let ctx = minijinja::Value::from_iter([
         ("domain_name", params.domain_name.clone()),
+        ("domain_aliases", params.domain_aliases.clone()),
         ("upstream_scheme", params.upstream_scheme.clone()),
         ("upstream_target", params.upstream_target.clone()),
         ("static_root", params.static_root.clone()),
@@ -239,6 +243,31 @@ mod tests {
         assert!(out.contains("server_name blog.example.com;"));
         assert!(out.contains("root /var/www/blog;"));
         assert!(out.contains("try_files $uri $uri/ =404;"));
+    }
+
+    #[test]
+    fn render_static_with_aliases() {
+        let params = RenderParams {
+            domain_name: "example.com".into(),
+            domain_aliases: "www.example.com m.example.com".into(),
+            static_root: "/var/www/example".into(),
+            ..Default::default()
+        };
+        let out = render(SiteKind::Static, &params).unwrap();
+        assert!(out.contains("server_name example.com www.example.com m.example.com;"));
+    }
+
+    #[test]
+    fn render_proxy_without_aliases() {
+        let params = RenderParams {
+            domain_name: "app.example.com".into(),
+            upstream_scheme: "http".into(),
+            upstream_target: "127.0.0.1:8080".into(),
+            ..Default::default()
+        };
+        let out = render(SiteKind::Proxy, &params).unwrap();
+        assert!(out.contains("server_name app.example.com;"));
+        assert!(!out.contains("server_name app.example.com ;"));
     }
 
     #[test]
