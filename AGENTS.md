@@ -8,7 +8,7 @@
 
 | 模块 | 技术 |
 |------|------|
-| **Shell 版** | Bash 脚本（`#!/bin/bash`，兼容 bash 4+），零外部依赖 |
+| **Shell 版** | Bash 脚本（`#!/bin/bash`，兼容 bash 4+），无项目级依赖，运行依赖 Debian/Ubuntu 常见系统工具 |
 | **TUI 版** | Rust（edition 2021，最低 1.75），ratatui 0.29 + crossterm 0.28 |
 | **安装脚本** | `install.sh`，纯 Bash 脚本，支持远程管道执行 |
 | **CI** | GitHub Actions，Linux ubuntu-22.04（glibc 2.35） |
@@ -95,7 +95,7 @@ shellcheck shell/*.sh install.sh
 - 函数命名：`snake_case`
 - 全局变量：`UPPER_SNAKE_CASE`
 - 本地变量：`local lowercase`
-- 字符串判断使用 `[[ ... ]]` 而非 `[ ... ]`
+- 新增/修改的复杂字符串判断优先使用 `[[ ... ]]`；不为风格统一单独批量替换既有 `[ ... ]`
 - 统一使用 `#!/bin/bash` shebang
 
 ### TUI（Rust）
@@ -112,7 +112,9 @@ shellcheck shell/*.sh install.sh
 # 1. 更新 tui-next/Cargo.toml 中的 version 字段（必须与 tag 一致，例如 v1.0.6 → version = "1.0.6"）
 # 2. 确保 CHANGELOG.md 记录了本次变更
 # 3. 提交并推送
-git add . && git commit -m "chore: release v1.0.x"
+git status
+git add <本次发布相关文件>
+git commit -m "chore: release v1.0.x"
 # 4. 打 tag 推送，CI 自动构建两个架构的 Release
 git tag v1.0.x
 git push origin v1.0.x
@@ -123,7 +125,7 @@ git push origin v1.0.x
 > `cargo build` 编译日志仍会显示旧版本号，导致混淆。
 
 - 二进制命名格式：`ngtool-<tag>-linux-<arch>`（amd64 / arm64）
-- 构建环境和运行时目标：Ubuntu 22.04（glibc 2.35），兼容 Debian 11+ / Ubuntu 22.04+
+- 构建环境和运行时目标：Ubuntu 22.04（glibc 2.35），兼容 Debian 12+ / Ubuntu 22.04+
 - TUI 版版本号通过环境变量 `NGTOOL_BUILD_VERSION` 由 build.rs 注入
 
 ## Git 工作流
@@ -134,13 +136,12 @@ git push origin v1.0.x
   - `feat:` — 新功能
   - `fix:` — 修复
   - `chore:` — 杂项（发布、配置、文档）
-  - `CI:` — CI 配置变更
+  - `ci:` — CI 配置变更
   - `doc:` — 文档
 - tag 格式：`v<major>.<minor>.<patch>`（如 `v1.0.6`）
 
 ## 要求
 
 - 所有改动都为最小改动
-- 改动修改完需要在 `CHANGELOG.md` 中有简要说明
 - `tui-next/doc/` 下的设计文档需要许可才能改动
 - 思考使用英文，输出使用中文
