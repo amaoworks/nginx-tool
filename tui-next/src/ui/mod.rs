@@ -150,7 +150,12 @@ fn draw_content(frame: &mut Frame, area: Rect, state: &AppState) {
         Route::Dashboard => views::dashboard::render(frame, area, state),
         Route::Sites(SitesRoute::List) => views::sites::render_list(frame, area, state),
         Route::Sites(SitesRoute::New) => views::site_form::render(frame, area, state),
-        Route::Sites(SitesRoute::EditForm { .. }) => views::site_edit::render(frame, area, state),
+        Route::Sites(SitesRoute::EditManaged { .. }) => {
+            views::site_edit::render(frame, area, state)
+        }
+        Route::Sites(SitesRoute::EditAdvanced { .. }) => {
+            views::site_edit_advanced::render(frame, area, state)
+        }
         Route::Sites(SitesRoute::EditRaw { .. }) => {
             views::site_edit_raw::render(frame, area, state)
         }
@@ -182,7 +187,8 @@ fn footer_hints(state: &AppState) -> String {
         Route::Dashboard => "仪表盘",
         Route::Sites(SitesRoute::List) => "站点列表",
         Route::Sites(SitesRoute::New) => "新建站点",
-        Route::Sites(SitesRoute::EditForm { .. }) => "编辑站点 / 表单",
+        Route::Sites(SitesRoute::EditManaged { .. }) => "编辑站点 / 托管",
+        Route::Sites(SitesRoute::EditAdvanced { .. }) => "编辑站点 / 高级",
         Route::Sites(SitesRoute::EditRaw { .. }) => "编辑站点 / 原始",
         Route::Sites(SitesRoute::EditSlotFull { .. }) => "编辑站点 / 注入槽全屏",
         Route::Certs => "证书管理",
@@ -199,23 +205,35 @@ fn footer_hints(state: &AppState) -> String {
         }
         Route::Sites(SitesRoute::List) => {
             tips.push("[n] 新建");
-            tips.push("[e] 编辑");
-            tips.push("[Enter] 启用/停用");
+            tips.push("[Enter] 编辑");
+            tips.push("[s] 启用/停用");
             tips.push("[d] 删除");
             tips.push("[c] 证书");
             tips.push("[l] 日志");
             tips.push("[Esc] 返回侧栏");
         }
         Route::Sites(SitesRoute::New) => {
-            tips.push("[Tab] 切换字段");
-            tips.push("[Ctrl+Enter] 提交");
+            tips.push("[Tab] 切区域");
+            tips.push("[↑↓←→] 移动");
+            tips.push("[Space] 开关");
+            tips.push("[Enter] 确认/提交");
             tips.push("[Esc] 返回");
         }
-        Route::Sites(SitesRoute::EditForm { .. }) => {
+        Route::Sites(SitesRoute::EditManaged { .. }) => {
             tips.push("[Ctrl+S] 保存测试");
             tips.push("[Ctrl+W] 仅保存");
             tips.push("[Ctrl+D] 重置");
+            tips.push("[a] 高级");
+            tips.push("[o] 原始");
+            tips.push("[Esc] 返回");
+        }
+        Route::Sites(SitesRoute::EditAdvanced { .. }) => {
+            tips.push("[←→] 切槽位");
+            tips.push("[↑↓] 选模板");
+            tips.push("[Enter/Space] 追加");
+            tips.push("[Ctrl+R] 替换");
             tips.push("[Ctrl+E] 全屏槽");
+            tips.push("[a] 托管");
             tips.push("[o] 原始");
             tips.push("[Esc] 返回");
         }
@@ -223,7 +241,7 @@ fn footer_hints(state: &AppState) -> String {
             tips.push("[Ctrl+S] 保存测试");
             tips.push("[Ctrl+W] 仅保存");
             tips.push("[Ctrl+Z/Y] 撤销/重做");
-            tips.push("[o] 表单");
+            tips.push("[o] 托管");
             tips.push("[Esc] 返回");
         }
         Route::Sites(SitesRoute::EditSlotFull { .. }) => {

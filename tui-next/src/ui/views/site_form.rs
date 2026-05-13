@@ -125,6 +125,59 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         lines.push(Line::from(""));
     }
 
+    // 关键选项
+    lines.push(Line::from(Span::styled(
+        "关键选项:",
+        Style::default().fg(theme::FG_NORMAL),
+    )));
+    if form.site_type == SiteTypeChoice::Proxy {
+        lines.push(toggle_line(
+            "流式响应 / AI API",
+            form.feature_streaming,
+            form.focused == FormField::ProxyFeatureStreaming,
+        ));
+        lines.push(toggle_line(
+            "WebSocket",
+            form.feature_websocket,
+            form.focused == FormField::ProxyFeatureWebsocket,
+        ));
+        lines.push(toggle_line(
+            "大请求体 / 上传",
+            form.feature_large_body,
+            form.focused == FormField::ProxyFeatureLargeBody,
+        ));
+        lines.push(toggle_line(
+            "浏览器跨域 CORS",
+            form.feature_cors,
+            form.focused == FormField::ProxyFeatureCors,
+        ));
+        lines.push(toggle_line(
+            "长超时后端",
+            form.feature_long_timeout,
+            form.focused == FormField::ProxyFeatureLongTimeout,
+        ));
+    } else if form.site_type == SiteTypeChoice::Static {
+        let mode_focused = form.focused == FormField::StaticMode;
+        lines.push(field_label("站点模式:", mode_focused));
+        lines.push(static_mode_line(form.static_spa_mode, mode_focused));
+        lines.push(toggle_line(
+            "静态资源缓存",
+            form.static_cache,
+            form.focused == FormField::StaticFeatureCache,
+        ));
+        lines.push(toggle_line(
+            "敏感路径保护",
+            form.static_block_sensitive,
+            form.focused == FormField::StaticFeatureBlockSensitive,
+        ));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  Emby/Jellyfin 类型默认使用内置优化代理配置",
+            Style::default().fg(theme::FG_DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+
     // 创建后操作
     let enable_focused = form.focused == FormField::EnableCheckbox;
     let cert_focused = form.focused == FormField::CertCheckbox;
@@ -244,5 +297,44 @@ fn input_field<'a>(value: &str, focused: bool, placeholder: &str) -> Line<'a> {
         Span::styled("[", bracket_style),
         Span::styled(display, style),
         Span::styled("]", bracket_style),
+    ])
+}
+
+fn toggle_line<'a>(label: &str, enabled: bool, focused: bool) -> Line<'a> {
+    let marker = if enabled { "[✕]" } else { "[ ]" };
+    let style = if focused {
+        Style::default()
+            .fg(theme::FG_HINT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::FG_NORMAL)
+    };
+    Line::from(Span::styled(format!("  {} {}", marker, label), style))
+}
+
+fn static_mode_line<'a>(spa_mode: bool, focused: bool) -> Line<'a> {
+    let normal_style = if focused && !spa_mode {
+        Style::default()
+            .fg(theme::FG_HINT)
+            .add_modifier(Modifier::BOLD)
+    } else if !spa_mode {
+        Style::default().fg(theme::FG_HINT)
+    } else {
+        Style::default().fg(theme::FG_NORMAL)
+    };
+    let spa_style = if focused && spa_mode {
+        Style::default()
+            .fg(theme::FG_HINT)
+            .add_modifier(Modifier::BOLD)
+    } else if spa_mode {
+        Style::default().fg(theme::FG_HINT)
+    } else {
+        Style::default().fg(theme::FG_NORMAL)
+    };
+    Line::from(vec![
+        Span::styled(if !spa_mode { "  ◉ " } else { "  ○ " }, normal_style),
+        Span::styled("普通静态", normal_style),
+        Span::styled(if spa_mode { "   ◉ " } else { "   ○ " }, spa_style),
+        Span::styled("SPA 单页", spa_style),
     ])
 }

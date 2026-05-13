@@ -14,7 +14,10 @@ pub enum SitesRoute {
     List,
     #[allow(dead_code)]
     New,
-    EditForm {
+    EditManaged {
+        site_name: String,
+    },
+    EditAdvanced {
         site_name: String,
     },
     EditRaw {

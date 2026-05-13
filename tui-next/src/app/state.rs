@@ -392,7 +392,7 @@ impl SiteTypeChoice {
     ];
     pub fn label(&self) -> &'static str {
         match self {
-            SiteTypeChoice::Proxy => "反向代理（通用）",
+            SiteTypeChoice::Proxy => "反向代理",
             SiteTypeChoice::Emby => "反向代理（Emby/Jellyfin）",
             SiteTypeChoice::Static => "静态站点",
         }
@@ -408,18 +408,34 @@ pub enum FormField {
     DomainAliases,
     SiteType,
     Target,
+    ProxyFeatureStreaming,
+    ProxyFeatureWebsocket,
+    ProxyFeatureLargeBody,
+    ProxyFeatureCors,
+    ProxyFeatureLongTimeout,
+    StaticMode,
+    StaticFeatureCache,
+    StaticFeatureBlockSensitive,
     EnableCheckbox,
     CertCheckbox,
     SubmitButton,
 }
 
 impl FormField {
-    pub const ORDER: [FormField; 8] = [
+    pub const ORDER: [FormField; 16] = [
         FormField::SiteName,
         FormField::Domain,
         FormField::DomainAliases,
         FormField::SiteType,
         FormField::Target,
+        FormField::ProxyFeatureStreaming,
+        FormField::ProxyFeatureWebsocket,
+        FormField::ProxyFeatureLargeBody,
+        FormField::ProxyFeatureCors,
+        FormField::ProxyFeatureLongTimeout,
+        FormField::StaticMode,
+        FormField::StaticFeatureCache,
+        FormField::StaticFeatureBlockSensitive,
         FormField::EnableCheckbox,
         FormField::CertCheckbox,
         FormField::SubmitButton,
@@ -434,6 +450,14 @@ pub struct SiteFormState {
     pub domain_aliases: String,
     pub site_type: SiteTypeChoice,
     pub target: String,
+    pub feature_streaming: bool,
+    pub feature_websocket: bool,
+    pub feature_large_body: bool,
+    pub feature_cors: bool,
+    pub feature_long_timeout: bool,
+    pub static_spa_mode: bool,
+    pub static_cache: bool,
+    pub static_block_sensitive: bool,
     pub enable_now: bool,
     pub request_cert: bool,
     pub focused: FormField,
@@ -446,6 +470,21 @@ pub struct SiteFormState {
 }
 
 impl SiteFormState {
+    fn is_field_visible(&self, field: FormField) -> bool {
+        match field {
+            FormField::Target => self.site_type != SiteTypeChoice::Static,
+            FormField::ProxyFeatureStreaming
+            | FormField::ProxyFeatureWebsocket
+            | FormField::ProxyFeatureLargeBody
+            | FormField::ProxyFeatureCors
+            | FormField::ProxyFeatureLongTimeout => self.site_type == SiteTypeChoice::Proxy,
+            FormField::StaticMode
+            | FormField::StaticFeatureCache
+            | FormField::StaticFeatureBlockSensitive => self.site_type == SiteTypeChoice::Static,
+            _ => true,
+        }
+    }
+
     pub fn move_focus(&mut self, delta: i32) {
         let len = FormField::ORDER.len() as i32;
         let cur = FormField::ORDER
@@ -453,14 +492,16 @@ impl SiteFormState {
             .position(|f| *f == self.focused)
             .map(|x| x as i32)
             .unwrap_or(0);
-        let mut next_idx = (cur + delta).rem_euclid(len) as usize;
-        // 静态站点时跳过 Target 字段（检查目标而非当前位置）
-        if self.site_type == SiteTypeChoice::Static
-            && FormField::ORDER[next_idx] == FormField::Target
-        {
-            next_idx = (cur + delta * 2).rem_euclid(len) as usize;
+        let mut next_idx = cur;
+        for _ in 0..len {
+            next_idx = (next_idx + delta).rem_euclid(len);
+            let field = FormField::ORDER[next_idx as usize];
+            if self.is_field_visible(field) {
+                self.focused = field;
+                return;
+            }
         }
-        self.focused = FormField::ORDER[next_idx];
+        self.focused = FormField::ORDER[cur as usize];
     }
 
     pub fn toggle_site_type(&mut self, delta: i32) {
@@ -472,6 +513,9 @@ impl SiteFormState {
             .unwrap_or(0);
         let next = (cur + delta).rem_euclid(len) as usize;
         self.site_type = SiteTypeChoice::ALL[next];
+        if !self.is_field_visible(self.focused) {
+            self.move_focus(1);
+        }
     }
 
     pub fn clear_errors(&mut self) {
@@ -559,6 +603,23 @@ impl SiteFormState {
             } else {
                 String::new()
             },
+            feature_streaming: self.site_type == SiteTypeChoice::Proxy && self.feature_streaming,
+            feature_websocket: self.site_type == SiteTypeChoice::Proxy && self.feature_websocket,
+            feature_large_body: match self.site_type {
+                SiteTypeChoice::Proxy => self.feature_large_body,
+                SiteTypeChoice::Emby => true,
+                SiteTypeChoice::Static => false,
+            },
+            feature_cors: self.site_type == SiteTypeChoice::Proxy && self.feature_cors,
+            feature_long_timeout: match self.site_type {
+                SiteTypeChoice::Proxy => self.feature_long_timeout,
+                SiteTypeChoice::Emby => true,
+                SiteTypeChoice::Static => false,
+            },
+            feature_spa_mode: self.site_type == SiteTypeChoice::Static && self.static_spa_mode,
+            feature_static_cache: self.site_type == SiteTypeChoice::Static && self.static_cache,
+            feature_block_sensitive: self.site_type == SiteTypeChoice::Static
+                && self.static_block_sensitive,
             enable_now: self.enable_now,
             request_cert: self.request_cert,
         })
@@ -757,9 +818,14 @@ pub enum EditFocus {
     DomainAliases,
     Target,
     Scheme,
-    SlotSelector,
-    SlotContent,
-    TemplateList,
+    ProxyFeatureStreaming,
+    ProxyFeatureWebsocket,
+    ProxyFeatureLargeBody,
+    ProxyFeatureCors,
+    ProxyFeatureLongTimeout,
+    StaticMode,
+    StaticFeatureCache,
+    StaticFeatureBlockSensitive,
 }
 
 /// 站点编辑器状态
@@ -781,6 +847,22 @@ pub struct SiteEditState {
     pub site_type: crate::domain::site::SiteType,
     /// 静态根目录
     pub static_root: String,
+    /// 反向代理：流式响应 / AI API
+    pub feature_streaming: bool,
+    /// 反向代理：WebSocket
+    pub feature_websocket: bool,
+    /// 反向代理：大请求体 / 上传
+    pub feature_large_body: bool,
+    /// 反向代理：CORS
+    pub feature_cors: bool,
+    /// 反向代理：长超时
+    pub feature_long_timeout: bool,
+    /// 静态站点：SPA 模式
+    pub feature_spa_mode: bool,
+    /// 静态站点：静态缓存
+    pub feature_static_cache: bool,
+    /// 静态站点：敏感路径保护
+    pub feature_block_sensitive: bool,
     /// 注入槽内容
     pub injection_slots:
         std::collections::HashMap<crate::template::config_parser::InjectionSlot, String>,
@@ -842,6 +924,14 @@ pub struct EditSnapshot {
     pub target: String,
     pub upstream_scheme: String,
     pub static_root: String,
+    pub feature_streaming: bool,
+    pub feature_websocket: bool,
+    pub feature_large_body: bool,
+    pub feature_cors: bool,
+    pub feature_long_timeout: bool,
+    pub feature_spa_mode: bool,
+    pub feature_static_cache: bool,
+    pub feature_block_sensitive: bool,
     pub injection_slots:
         std::collections::HashMap<crate::template::config_parser::InjectionSlot, String>,
 }
@@ -857,6 +947,14 @@ impl Default for SiteEditState {
             upstream_scheme: "http".into(),
             site_type: crate::domain::site::SiteType::Unknown,
             static_root: String::new(),
+            feature_streaming: false,
+            feature_websocket: false,
+            feature_large_body: false,
+            feature_cors: false,
+            feature_long_timeout: false,
+            feature_spa_mode: false,
+            feature_static_cache: true,
+            feature_block_sensitive: false,
             injection_slots: std::collections::HashMap::new(),
             current_slot: crate::template::config_parser::InjectionSlot::BeforeLocation,
             markers_intact: true,
@@ -889,6 +987,8 @@ impl SiteEditState {
         parsed: &crate::template::config_parser::ParsedForEdit,
     ) -> Self {
         let raw_lines: Vec<String> = parsed.raw_content.lines().map(String::from).collect();
+        let feature_enabled = |name: &str| parsed.managed_features.iter().any(|item| item == name);
+        let site_type = parsed.managed_type.unwrap_or(parsed.site_type);
         Self {
             site_name: site_name.to_string(),
             domain: parsed.domains.first().cloned().unwrap_or_default(),
@@ -904,8 +1004,30 @@ impl SiteEditState {
                 .upstream_scheme
                 .clone()
                 .unwrap_or_else(|| "http".into()),
-            site_type: parsed.site_type,
+            site_type,
             static_root: parsed.static_root.clone().unwrap_or_default(),
+            feature_streaming: site_type == crate::domain::site::SiteType::Proxy
+                && feature_enabled("streaming"),
+            feature_websocket: (site_type == crate::domain::site::SiteType::Proxy
+                && feature_enabled("websocket"))
+                || site_type == crate::domain::site::SiteType::Emby,
+            feature_large_body: (site_type == crate::domain::site::SiteType::Proxy
+                && feature_enabled("large_body"))
+                || site_type == crate::domain::site::SiteType::Emby,
+            feature_cors: site_type == crate::domain::site::SiteType::Proxy
+                && feature_enabled("cors"),
+            feature_long_timeout: (site_type == crate::domain::site::SiteType::Proxy
+                && feature_enabled("long_timeout"))
+                || site_type == crate::domain::site::SiteType::Emby,
+            feature_spa_mode: site_type == crate::domain::site::SiteType::Static
+                && feature_enabled("spa_mode"),
+            feature_static_cache: if site_type == crate::domain::site::SiteType::Static {
+                feature_enabled("static_cache")
+            } else {
+                true
+            },
+            feature_block_sensitive: site_type == crate::domain::site::SiteType::Static
+                && feature_enabled("block_sensitive"),
             injection_slots: parsed.injection_slots.clone(),
             markers_intact: parsed.markers_intact,
             raw_lines,
@@ -946,6 +1068,10 @@ impl SiteEditState {
                 self.set_error("target", e);
             }
         }
+        if self.site_type == crate::domain::site::SiteType::Static && self.static_root.trim().is_empty()
+        {
+            self.set_error("static_root", "静态目录不能为空".into());
+        }
         !self.has_errors()
     }
 
@@ -966,6 +1092,28 @@ impl SiteEditState {
             upstream_scheme,
             upstream_target,
             static_root: self.static_root.clone(),
+            feature_streaming: self.site_type == crate::domain::site::SiteType::Proxy
+                && self.feature_streaming,
+            feature_websocket: matches!(
+                self.site_type,
+                crate::domain::site::SiteType::Proxy | crate::domain::site::SiteType::Emby
+            ) && self.feature_websocket,
+            feature_large_body: matches!(
+                self.site_type,
+                crate::domain::site::SiteType::Proxy | crate::domain::site::SiteType::Emby
+            ) && self.feature_large_body,
+            feature_cors: self.site_type == crate::domain::site::SiteType::Proxy
+                && self.feature_cors,
+            feature_long_timeout: matches!(
+                self.site_type,
+                crate::domain::site::SiteType::Proxy | crate::domain::site::SiteType::Emby
+            ) && self.feature_long_timeout,
+            feature_spa_mode: self.site_type == crate::domain::site::SiteType::Static
+                && self.feature_spa_mode,
+            feature_static_cache: self.site_type == crate::domain::site::SiteType::Static
+                && self.feature_static_cache,
+            feature_block_sensitive: self.site_type == crate::domain::site::SiteType::Static
+                && self.feature_block_sensitive,
             custom_before_location: self
                 .injection_slots
                 .get(&crate::template::config_parser::InjectionSlot::BeforeLocation)
@@ -995,37 +1143,47 @@ impl SiteEditState {
 
     /// Tab 切换焦点
     pub fn move_focus_forward(&mut self) {
-        self.focused = match self.focused {
-            EditFocus::Domain => EditFocus::DomainAliases,
-            EditFocus::DomainAliases => EditFocus::Target,
-            EditFocus::Target => EditFocus::Scheme,
-            EditFocus::Scheme => EditFocus::SlotSelector,
-            EditFocus::SlotSelector => EditFocus::SlotContent,
-            EditFocus::SlotContent => EditFocus::TemplateList,
-            EditFocus::TemplateList => EditFocus::Domain,
-        };
-        // 静态站点跳过 Target 和 Scheme
-        if self.site_type == crate::domain::site::SiteType::Static
-            && (self.focused == EditFocus::Target || self.focused == EditFocus::Scheme)
-        {
-            self.focused = EditFocus::SlotSelector;
-        }
+        let order = self.focus_order();
+        let idx = order.iter().position(|f| *f == self.focused).unwrap_or(0);
+        self.focused = order[(idx + 1) % order.len()];
     }
 
     pub fn move_focus_backward(&mut self) {
-        self.focused = match self.focused {
-            EditFocus::Domain => EditFocus::TemplateList,
-            EditFocus::DomainAliases => EditFocus::Domain,
-            EditFocus::Target => EditFocus::DomainAliases,
-            EditFocus::Scheme => EditFocus::Target,
-            EditFocus::SlotSelector => EditFocus::Scheme,
-            EditFocus::SlotContent => EditFocus::SlotSelector,
-            EditFocus::TemplateList => EditFocus::SlotContent,
-        };
-        if self.site_type == crate::domain::site::SiteType::Static
-            && (self.focused == EditFocus::Scheme || self.focused == EditFocus::Target)
-        {
-            self.focused = EditFocus::DomainAliases;
+        let order = self.focus_order();
+        let idx = order.iter().position(|f| *f == self.focused).unwrap_or(0);
+        self.focused = order[(idx + order.len() - 1) % order.len()];
+    }
+
+    fn focus_order(&self) -> &'static [EditFocus] {
+        const PROXY_ORDER: &[EditFocus] = &[
+            EditFocus::Domain,
+            EditFocus::DomainAliases,
+            EditFocus::Target,
+            EditFocus::Scheme,
+            EditFocus::ProxyFeatureStreaming,
+            EditFocus::ProxyFeatureWebsocket,
+            EditFocus::ProxyFeatureLargeBody,
+            EditFocus::ProxyFeatureCors,
+            EditFocus::ProxyFeatureLongTimeout,
+        ];
+        const STATIC_ORDER: &[EditFocus] = &[
+            EditFocus::Domain,
+            EditFocus::DomainAliases,
+            EditFocus::StaticMode,
+            EditFocus::StaticFeatureCache,
+            EditFocus::StaticFeatureBlockSensitive,
+        ];
+        const EMBY_ORDER: &[EditFocus] = &[
+            EditFocus::Domain,
+            EditFocus::DomainAliases,
+            EditFocus::Target,
+            EditFocus::Scheme,
+        ];
+
+        match self.site_type {
+            crate::domain::site::SiteType::Static => STATIC_ORDER,
+            crate::domain::site::SiteType::Emby => EMBY_ORDER,
+            _ => PROXY_ORDER,
         }
     }
 
@@ -1066,6 +1224,14 @@ impl SiteEditState {
             target: self.target.clone(),
             upstream_scheme: self.upstream_scheme.clone(),
             static_root: self.static_root.clone(),
+            feature_streaming: self.feature_streaming,
+            feature_websocket: self.feature_websocket,
+            feature_large_body: self.feature_large_body,
+            feature_cors: self.feature_cors,
+            feature_long_timeout: self.feature_long_timeout,
+            feature_spa_mode: self.feature_spa_mode,
+            feature_static_cache: self.feature_static_cache,
+            feature_block_sensitive: self.feature_block_sensitive,
             injection_slots: self.injection_slots.clone(),
         }));
     }
@@ -1082,6 +1248,14 @@ impl SiteEditState {
         self.target = snap.target.clone();
         self.upstream_scheme = snap.upstream_scheme.clone();
         self.static_root = snap.static_root.clone();
+        self.feature_streaming = snap.feature_streaming;
+        self.feature_websocket = snap.feature_websocket;
+        self.feature_large_body = snap.feature_large_body;
+        self.feature_cors = snap.feature_cors;
+        self.feature_long_timeout = snap.feature_long_timeout;
+        self.feature_spa_mode = snap.feature_spa_mode;
+        self.feature_static_cache = snap.feature_static_cache;
+        self.feature_block_sensitive = snap.feature_block_sensitive;
         self.injection_slots = snap.injection_slots.clone();
         self.field_errors.clear();
         self.dirty = false;
@@ -1224,6 +1398,67 @@ impl SiteEditState {
         }
         self.dirty = true;
         Some(slot)
+    }
+}
+
+impl AppState {
+    fn toggle_site_edit_scheme(&mut self) {
+        self.site_edit.upstream_scheme = if self.site_edit.upstream_scheme == "http" {
+            "https".into()
+        } else {
+            "http".into()
+        };
+        self.site_edit.dirty = true;
+    }
+
+    fn toggle_site_edit_current_flag(&mut self) {
+        match self.site_edit.focused {
+            EditFocus::ProxyFeatureStreaming => {
+                self.site_edit.feature_streaming = !self.site_edit.feature_streaming;
+            }
+            EditFocus::ProxyFeatureWebsocket => {
+                self.site_edit.feature_websocket = !self.site_edit.feature_websocket;
+            }
+            EditFocus::ProxyFeatureLargeBody => {
+                self.site_edit.feature_large_body = !self.site_edit.feature_large_body;
+            }
+            EditFocus::ProxyFeatureCors => {
+                self.site_edit.feature_cors = !self.site_edit.feature_cors;
+            }
+            EditFocus::ProxyFeatureLongTimeout => {
+                self.site_edit.feature_long_timeout = !self.site_edit.feature_long_timeout;
+            }
+            EditFocus::StaticFeatureCache => {
+                self.site_edit.feature_static_cache = !self.site_edit.feature_static_cache;
+            }
+            EditFocus::StaticFeatureBlockSensitive => {
+                self.site_edit.feature_block_sensitive = !self.site_edit.feature_block_sensitive;
+            }
+            _ => return,
+        }
+        self.site_edit.dirty = true;
+    }
+
+    fn adjust_site_edit_managed_focus(&mut self, forward: bool) {
+        match self.site_edit.focused {
+            EditFocus::Scheme => {
+                self.toggle_site_edit_scheme();
+            }
+            EditFocus::StaticMode => {
+                self.site_edit.feature_spa_mode = if forward { true } else { false };
+                self.site_edit.dirty = true;
+            }
+            EditFocus::ProxyFeatureStreaming
+            | EditFocus::ProxyFeatureWebsocket
+            | EditFocus::ProxyFeatureLargeBody
+            | EditFocus::ProxyFeatureCors
+            | EditFocus::ProxyFeatureLongTimeout
+            | EditFocus::StaticFeatureCache
+            | EditFocus::StaticFeatureBlockSensitive => {
+                self.toggle_site_edit_current_flag();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1833,13 +2068,11 @@ impl AppState {
                     | FormField::DomainAliases
                     | FormField::Target
             ),
-            Route::Sites(SitesRoute::EditForm { .. }) => matches!(
+            Route::Sites(SitesRoute::EditManaged { .. }) => matches!(
                 self.site_edit.focused,
-                EditFocus::Domain
-                    | EditFocus::DomainAliases
-                    | EditFocus::Target
-                    | EditFocus::SlotContent
+                EditFocus::Domain | EditFocus::DomainAliases | EditFocus::Target
             ),
+            Route::Sites(SitesRoute::EditAdvanced { .. }) => true,
             // 原始模式与槽位全屏编辑：整页都在接收文本
             Route::Sites(SitesRoute::EditRaw { .. })
             | Route::Sites(SitesRoute::EditSlotFull { .. }) => true,
@@ -1922,6 +2155,10 @@ impl AppState {
                     return;
                 }
                 KeyCode::Enter => {
+                    self.enter_site_edit();
+                    return;
+                }
+                KeyCode::Char('s') => {
                     self.request_site_toggle();
                     return;
                 }
@@ -1934,10 +2171,6 @@ impl AppState {
                         self.site_form = SiteFormState::default();
                         self.route = Route::Sites(SitesRoute::New);
                     }
-                    return;
-                }
-                KeyCode::Char('e') => {
-                    self.enter_site_edit();
                     return;
                 }
                 KeyCode::Char('d') => {
@@ -1983,8 +2216,12 @@ impl AppState {
         }
 
         // 站点编辑模式按键处理
-        if matches!(self.route, Route::Sites(SitesRoute::EditForm { .. })) {
-            return self.handle_site_edit_key(k);
+        if matches!(self.route, Route::Sites(SitesRoute::EditManaged { .. })) {
+            return self.handle_site_edit_managed_key(k);
+        }
+
+        if matches!(self.route, Route::Sites(SitesRoute::EditAdvanced { .. })) {
+            return self.handle_site_edit_advanced_key(k);
         }
 
         // 原始配置编辑模式按键处理
@@ -2345,12 +2582,6 @@ impl AppState {
             return; // 提交中不接受输入
         }
 
-        // Ctrl+Enter: 快速提交
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Enter) {
-            self.submit_site_form();
-            return;
-        }
-
         // Esc: 返回列表（有内容时弹出确认框，详见 design.md 子模式 B）
         if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Esc) {
             if self.site_form.site_name.is_empty()
@@ -2374,8 +2605,13 @@ impl AppState {
             return;
         }
 
-        // 上下键：字段间导航（SiteType 焦点留给下方类型切换逻辑）
-        if k.modifiers == KeyModifiers::NONE && self.site_form.focused != FormField::SiteType {
+        // 上下键：字段间导航（特殊选择器留给后续逻辑）
+        if k.modifiers == KeyModifiers::NONE
+            && !matches!(
+                self.site_form.focused,
+                FormField::SiteType | FormField::StaticMode
+            )
+        {
             match k.code {
                 KeyCode::Up => {
                     self.site_form.move_focus(-1);
@@ -2389,12 +2625,28 @@ impl AppState {
             }
         }
 
-        // 上下键: 类型选择器切换
+        // 类型选择器切换
         if k.modifiers == KeyModifiers::NONE && self.site_form.focused == FormField::SiteType {
             match k.code {
                 KeyCode::Up => self.site_form.toggle_site_type(-1),
                 KeyCode::Down => self.site_form.toggle_site_type(1),
+                KeyCode::Left => self.site_form.toggle_site_type(-1),
+                KeyCode::Right => self.site_form.toggle_site_type(1),
                 KeyCode::Enter => self.site_form.move_focus(1),
+                _ => {}
+            }
+            return;
+        }
+
+        // 静态模式选择器
+        if k.modifiers == KeyModifiers::NONE && self.site_form.focused == FormField::StaticMode {
+            match k.code {
+                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
+                    self.site_form.static_spa_mode = !self.site_form.static_spa_mode;
+                }
+                KeyCode::Enter => self.site_form.move_focus(1),
+                KeyCode::Up => self.site_form.move_focus(-1),
+                KeyCode::Down => self.site_form.move_focus(1),
                 _ => {}
             }
             return;
@@ -2405,6 +2657,30 @@ impl AppState {
             match self.site_form.focused {
                 FormField::SubmitButton => self.submit_site_form(),
                 FormField::SiteType => self.site_form.move_focus(1),
+                FormField::ProxyFeatureStreaming => {
+                    self.site_form.feature_streaming = !self.site_form.feature_streaming;
+                }
+                FormField::ProxyFeatureWebsocket => {
+                    self.site_form.feature_websocket = !self.site_form.feature_websocket;
+                }
+                FormField::ProxyFeatureLargeBody => {
+                    self.site_form.feature_large_body = !self.site_form.feature_large_body;
+                }
+                FormField::ProxyFeatureCors => {
+                    self.site_form.feature_cors = !self.site_form.feature_cors;
+                }
+                FormField::ProxyFeatureLongTimeout => {
+                    self.site_form.feature_long_timeout = !self.site_form.feature_long_timeout;
+                }
+                FormField::StaticMode => {
+                    self.site_form.static_spa_mode = !self.site_form.static_spa_mode;
+                }
+                FormField::StaticFeatureCache => {
+                    self.site_form.static_cache = !self.site_form.static_cache;
+                }
+                FormField::StaticFeatureBlockSensitive => {
+                    self.site_form.static_block_sensitive = !self.site_form.static_block_sensitive;
+                }
                 FormField::EnableCheckbox => {
                     self.site_form.enable_now = !self.site_form.enable_now;
                 }
@@ -2422,6 +2698,30 @@ impl AppState {
         // Space: 复选框切换
         if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char(' ')) {
             match (self.site_form.focused, self.site_form.enable_now) {
+                (FormField::ProxyFeatureStreaming, _) => {
+                    self.site_form.feature_streaming = !self.site_form.feature_streaming;
+                }
+                (FormField::ProxyFeatureWebsocket, _) => {
+                    self.site_form.feature_websocket = !self.site_form.feature_websocket;
+                }
+                (FormField::ProxyFeatureLargeBody, _) => {
+                    self.site_form.feature_large_body = !self.site_form.feature_large_body;
+                }
+                (FormField::ProxyFeatureCors, _) => {
+                    self.site_form.feature_cors = !self.site_form.feature_cors;
+                }
+                (FormField::ProxyFeatureLongTimeout, _) => {
+                    self.site_form.feature_long_timeout = !self.site_form.feature_long_timeout;
+                }
+                (FormField::StaticMode, _) => {
+                    self.site_form.static_spa_mode = !self.site_form.static_spa_mode;
+                }
+                (FormField::StaticFeatureCache, _) => {
+                    self.site_form.static_cache = !self.site_form.static_cache;
+                }
+                (FormField::StaticFeatureBlockSensitive, _) => {
+                    self.site_form.static_block_sensitive = !self.site_form.static_block_sensitive;
+                }
                 (FormField::EnableCheckbox, _) => {
                     self.site_form.enable_now = !self.site_form.enable_now;
                 }
@@ -2552,11 +2852,11 @@ impl AppState {
         self.site_edit = SiteEditState::from_parsed(&name, &parsed);
         self.site_edit.mtime_at_load = mtime_at_load;
         self.site_edit.seal_original();
-        self.route = Route::Sites(SitesRoute::EditForm { site_name: name });
+        self.route = Route::Sites(SitesRoute::EditManaged { site_name: name });
     }
 
-    /// 处理站点编辑（表单模式）按键
-    fn handle_site_edit_key(&mut self, k: crossterm::event::KeyEvent) {
+    /// 处理站点编辑（托管模式）按键
+    fn handle_site_edit_managed_key(&mut self, k: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         if self.site_edit.saving {
@@ -2583,13 +2883,7 @@ impl AppState {
             return;
         }
 
-        // 上下键：焦点切换（TemplateList 和 SlotSelector 有自己的方向键行为）
-        if k.modifiers == KeyModifiers::NONE
-            && !matches!(
-                self.site_edit.focused,
-                EditFocus::TemplateList | EditFocus::SlotSelector
-            )
-        {
+        if k.modifiers == KeyModifiers::NONE {
             match k.code {
                 KeyCode::Up => {
                     self.site_edit.move_focus_backward();
@@ -2599,18 +2893,26 @@ impl AppState {
                     self.site_edit.move_focus_forward();
                     return;
                 }
+                KeyCode::Left => {
+                    self.adjust_site_edit_managed_focus(false);
+                    return;
+                }
+                KeyCode::Right => {
+                    self.adjust_site_edit_managed_focus(true);
+                    return;
+                }
                 _ => {}
             }
         }
 
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('a')) {
+            let name = self.site_edit.site_name.clone();
+            self.route = Route::Sites(SitesRoute::EditAdvanced { site_name: name });
+            return;
+        }
+
         // o: 切换到原始配置模式
         if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('o')) {
-            if !self.site_edit.markers_intact {
-                self.notification = Some(Notification::failure(
-                    "注入槽标记已修改，无法切回表单模式".to_string(),
-                ));
-                return;
-            }
             let name = self.site_edit.site_name.clone();
             self.route = Route::Sites(SitesRoute::EditRaw { site_name: name });
             return;
@@ -2634,102 +2936,6 @@ impl AppState {
                 self.notification = Some(Notification::success("已重置为加载时的值".to_string()));
             } else {
                 self.notification = Some(Notification::failure("无可恢复的原始值".to_string()));
-            }
-            return;
-        }
-
-        // Ctrl+R: 用当前选中的模板替换槽位（design.md 子模式 C）
-        if k.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(k.code, KeyCode::Char('r'))
-            && self.site_edit.focused == EditFocus::TemplateList
-        {
-            let snippets =
-                crate::template::snippets::get_snippets_for_slot(self.site_edit.current_slot);
-            if let Some(snippet) = snippets.get(self.site_edit.template_index) {
-                self.site_edit.replace_with_snippet(snippet.content);
-                self.notification = Some(Notification::success("已替换槽位".to_string()));
-            }
-            return;
-        }
-
-        // Ctrl+E: 进入当前注入槽的全屏编辑模式（design.md 子模式 C，state.rs 原 TODO）
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('e')) {
-            // 任何焦点都允许进入全屏编辑当前槽位（也兼容 SlotContent 焦点）
-            self.site_edit.enter_slot_full();
-            let slot = self.site_edit.current_slot;
-            let name = self.site_edit.site_name.clone();
-            self.route = Route::Sites(SitesRoute::EditSlotFull {
-                site_name: name,
-                slot,
-            });
-            return;
-        }
-
-        // 左右键：切换注入槽
-        if k.modifiers == KeyModifiers::NONE && self.site_edit.focused == EditFocus::SlotSelector {
-            match k.code {
-                KeyCode::Left => {
-                    self.site_edit.cycle_slot(-1);
-                    return;
-                }
-                KeyCode::Right => {
-                    self.site_edit.cycle_slot(1);
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Space: 追加模板到注入槽
-        if k.modifiers == KeyModifiers::NONE
-            && matches!(k.code, KeyCode::Char(' '))
-            && self.site_edit.focused == EditFocus::TemplateList
-        {
-            let snippets =
-                crate::template::snippets::get_snippets_for_slot(self.site_edit.current_slot);
-            if let Some(snippet) = snippets.get(self.site_edit.template_index) {
-                self.site_edit.append_snippet(snippet.content);
-                self.notification = Some(Notification::success("已追加模板".to_string()));
-            }
-            return;
-        }
-
-        // 上下键：切换模板
-        if k.modifiers == KeyModifiers::NONE && self.site_edit.focused == EditFocus::TemplateList {
-            match k.code {
-                KeyCode::Up => {
-                    let snippets = crate::template::snippets::get_snippets_for_slot(
-                        self.site_edit.current_slot,
-                    );
-                    if !snippets.is_empty() {
-                        self.site_edit.template_index =
-                            self.site_edit.template_index.saturating_sub(1);
-                    }
-                    return;
-                }
-                KeyCode::Down => {
-                    let snippets = crate::template::snippets::get_snippets_for_slot(
-                        self.site_edit.current_slot,
-                    );
-                    if self.site_edit.template_index + 1 < snippets.len() {
-                        self.site_edit.template_index += 1;
-                    }
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Enter: 在模板列表上追加模板
-        if k.modifiers == KeyModifiers::NONE
-            && matches!(k.code, KeyCode::Enter)
-            && self.site_edit.focused == EditFocus::TemplateList
-        {
-            let snippets =
-                crate::template::snippets::get_snippets_for_slot(self.site_edit.current_slot);
-            if let Some(snippet) = snippets.get(self.site_edit.template_index) {
-                self.site_edit.append_snippet(snippet.content);
-                self.notification = Some(Notification::success("已追加模板".to_string()));
             }
             return;
         }
@@ -2769,40 +2975,131 @@ impl AppState {
                     _ => {}
                 },
                 EditFocus::Scheme => {
-                    // 协议切换：h / http / https
-                    if matches!(k.code, KeyCode::Char('h') | KeyCode::Char('s')) {
-                        self.site_edit.upstream_scheme = if self.site_edit.upstream_scheme == "http"
-                        {
-                            "https".into()
-                        } else {
-                            "http".into()
-                        };
+                    if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ')) {
+                        self.toggle_site_edit_scheme();
+                        return;
+                    }
+                    if matches!(k.code, KeyCode::Char('h')) {
+                        self.site_edit.upstream_scheme = "http".into();
                         self.site_edit.dirty = true;
+                        return;
+                    }
+                    if matches!(k.code, KeyCode::Char('s')) {
+                        self.site_edit.upstream_scheme = "https".into();
+                        self.site_edit.dirty = true;
+                        return;
                     }
                 }
-                EditFocus::SlotContent => {
-                    // 注入槽内容编辑：常驻框直接打字（design.md 子模式 C）
-                    // 全屏编辑入口走 Ctrl+E，由上方分支处理
-                    match k.code {
-                        KeyCode::Char(c) => {
-                            let slot = self.site_edit.current_slot;
-                            let content = self.site_edit.injection_slots.entry(slot).or_default();
-                            content.push(c);
-                            self.site_edit.dirty = true;
-                        }
-                        KeyCode::Backspace => {
-                            let slot = self.site_edit.current_slot;
-                            if let Some(content) = self.site_edit.injection_slots.get_mut(&slot) {
-                                content.pop();
-                                self.site_edit.dirty = true;
-                            }
-                        }
-                        _ => {}
+                EditFocus::ProxyFeatureStreaming
+                | EditFocus::ProxyFeatureWebsocket
+                | EditFocus::ProxyFeatureLargeBody
+                | EditFocus::ProxyFeatureCors
+                | EditFocus::ProxyFeatureLongTimeout
+                | EditFocus::StaticFeatureCache
+                | EditFocus::StaticFeatureBlockSensitive => {
+                    if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ')) {
+                        self.toggle_site_edit_current_flag();
+                        return;
                     }
+                }
+                EditFocus::StaticMode => {
+                    if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ')) {
+                        self.site_edit.feature_spa_mode = !self.site_edit.feature_spa_mode;
+                        self.site_edit.dirty = true;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// 处理站点编辑（高级模式）按键
+    fn handle_site_edit_advanced_key(&mut self, k: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        if self.site_edit.saving {
+            return;
+        }
+
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('a')) {
+            let name = self.site_edit.site_name.clone();
+            self.route = Route::Sites(SitesRoute::EditManaged { site_name: name });
+            return;
+        }
+
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('o')) {
+            let name = self.site_edit.site_name.clone();
+            self.route = Route::Sites(SitesRoute::EditRaw { site_name: name });
+            return;
+        }
+
+        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('e')) {
+            self.site_edit.enter_slot_full();
+            let slot = self.site_edit.current_slot;
+            let name = self.site_edit.site_name.clone();
+            self.route = Route::Sites(SitesRoute::EditSlotFull {
+                site_name: name,
+                slot,
+            });
+            return;
+        }
+
+        if k.modifiers == KeyModifiers::NONE && self.site_edit.focused == EditFocus::Domain {
+            match k.code {
+                KeyCode::Left => {
+                    self.site_edit.cycle_slot(-1);
+                    return;
+                }
+                KeyCode::Right => {
+                    self.site_edit.cycle_slot(1);
+                    return;
+                }
+                KeyCode::Up => {
+                    let snippets = crate::template::snippets::get_snippets_for_slot(
+                        self.site_edit.current_slot,
+                    );
+                    if !snippets.is_empty() {
+                        self.site_edit.template_index =
+                            self.site_edit.template_index.saturating_sub(1);
+                    }
+                    return;
+                }
+                KeyCode::Down => {
+                    let snippets = crate::template::snippets::get_snippets_for_slot(
+                        self.site_edit.current_slot,
+                    );
+                    if self.site_edit.template_index + 1 < snippets.len() {
+                        self.site_edit.template_index += 1;
+                    }
+                    return;
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    let snippets = crate::template::snippets::get_snippets_for_slot(
+                        self.site_edit.current_slot,
+                    );
+                    if let Some(snippet) = snippets.get(self.site_edit.template_index) {
+                        self.site_edit.append_snippet(snippet.content);
+                        self.notification = Some(Notification::success("已追加模板".to_string()));
+                    }
+                    return;
                 }
                 _ => {}
             }
         }
+
+        if k.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(k.code, KeyCode::Char('r'))
+        {
+            let snippets =
+                crate::template::snippets::get_snippets_for_slot(self.site_edit.current_slot);
+            if let Some(snippet) = snippets.get(self.site_edit.template_index) {
+                self.site_edit.replace_with_snippet(snippet.content);
+                self.notification = Some(Notification::success("已替换槽位".to_string()));
+            }
+            return;
+        }
+
+        self.handle_site_edit_managed_key(k);
     }
 
     /// 处理原始配置编辑按键
@@ -2843,7 +3140,7 @@ impl AppState {
             self.site_edit = SiteEditState::from_parsed(&name, &parsed);
             self.site_edit.mtime_at_load = mtime;
             self.site_edit.dirty = dirty;
-            self.route = Route::Sites(SitesRoute::EditForm { site_name: name });
+            self.route = Route::Sites(SitesRoute::EditManaged { site_name: name });
             return;
         }
 
@@ -3019,7 +3316,7 @@ impl AppState {
                 self.notification = Some(Notification::success("已完成槽位编辑".to_string()));
             }
             let name = self.site_edit.site_name.clone();
-            self.route = Route::Sites(SitesRoute::EditForm { site_name: name });
+            self.route = Route::Sites(SitesRoute::EditAdvanced { site_name: name });
             return;
         }
 
@@ -3031,7 +3328,7 @@ impl AppState {
             self.site_edit.slot_edit_undo.clear();
             self.site_edit.slot_edit_redo.clear();
             self.notification = Some(Notification::info("已取消槽位编辑".to_string()));
-            self.route = Route::Sites(SitesRoute::EditForm { site_name: name });
+            self.route = Route::Sites(SitesRoute::EditAdvanced { site_name: name });
             return;
         }
 

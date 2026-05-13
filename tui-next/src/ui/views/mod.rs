@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod logs;
 pub mod service;
 pub mod site_edit;
+pub mod site_edit_advanced;
 pub mod site_edit_raw;
 pub mod site_edit_slot_full;
 pub mod site_form;

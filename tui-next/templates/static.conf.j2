@@ -1,6 +1,8 @@
 server {
     listen 80;
     server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
+    # nginx-tools:managed type=static
+    # nginx-tools:features={% if feature_spa_mode == "true" %}spa_mode,{% endif %}{% if feature_static_cache == "true" %}static_cache,{% endif %}{% if feature_block_sensitive == "true" %}block_sensitive,{% endif %}
     root {{ static_root }};
     index index.html index.htm;
 
@@ -12,16 +14,29 @@ server {
     # nginx-tools:custom-before-location:end
 
     location / {
+{% if feature_spa_mode == "true" %}
+        try_files $uri $uri/ /index.html;
+{% else %}
         try_files $uri $uri/ =404;
+{% endif %}
         # nginx-tools:custom-inside-location:start
         {{ custom_inside_location | safe }}
         # nginx-tools:custom-inside-location:end
     }
 
+{% if feature_static_cache == "true" %}
     location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2)$ {
         expires 30d;
         add_header Cache-Control "public, immutable";
     }
+{% endif %}
+
+{% if feature_block_sensitive == "true" %}
+    location ~ /\.(ht|git|svn) {
+        deny all;
+        return 404;
+    }
+{% endif %}
 
     # nginx-tools:custom-after-location:start
     {{ custom_after_location | safe }}

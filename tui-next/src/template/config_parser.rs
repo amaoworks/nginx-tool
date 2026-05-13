@@ -68,6 +68,10 @@ pub struct ParsedForEdit {
     pub upstream_target: Option<String>,
     /// 静态根目录（静态站点）
     pub static_root: Option<String>,
+    /// 托管类型标记
+    pub managed_type: Option<crate::domain::site::SiteType>,
+    /// 托管特性集合
+    pub managed_features: Vec<String>,
     /// 注入槽内容
     pub injection_slots: HashMap<InjectionSlot, String>,
     /// 注入槽标记是否完整
@@ -98,6 +102,7 @@ pub fn parse_for_edit(content: &str) -> ParsedForEdit {
 
     // 提取注入槽内容
     let (injection_slots, markers_intact) = extract_injection_slots(content);
+    let (managed_type, managed_features) = extract_managed_metadata(content);
 
     ParsedForEdit {
         raw_content: content.to_string(),
@@ -106,9 +111,38 @@ pub fn parse_for_edit(content: &str) -> ParsedForEdit {
         upstream_scheme,
         upstream_target,
         static_root: parsed.static_root,
+        managed_type,
+        managed_features,
         injection_slots,
         markers_intact,
     }
+}
+
+fn extract_managed_metadata(content: &str) -> (Option<crate::domain::site::SiteType>, Vec<String>) {
+    let mut managed_type = None;
+    let mut features = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("# nginx-tools:managed type=") {
+            managed_type = match value.trim() {
+                "proxy" => Some(crate::domain::site::SiteType::Proxy),
+                "emby" => Some(crate::domain::site::SiteType::Emby),
+                "static" => Some(crate::domain::site::SiteType::Static),
+                _ => None,
+            };
+        }
+        if let Some(value) = trimmed.strip_prefix("# nginx-tools:features=") {
+            features = value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+    }
+
+    (managed_type, features)
 }
 
 /// 从配置文件中提取注入槽内容
@@ -245,5 +279,30 @@ server {
         assert_eq!(edit.static_root, Some("/var/www/blog".to_string()));
         assert!(edit.upstream_scheme.is_none());
         assert!(edit.upstream_target.is_none());
+    }
+
+    #[test]
+    fn parse_for_edit_extracts_managed_features() {
+        let content = r#"
+server {
+    listen 80;
+    server_name api.example.com;
+    # nginx-tools:managed type=proxy
+    # nginx-tools:features=streaming,websocket,long_timeout,
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+"#;
+        let edit = parse_for_edit(content);
+        assert_eq!(edit.managed_type, Some(crate::domain::site::SiteType::Proxy));
+        assert_eq!(
+            edit.managed_features,
+            vec![
+                "streaming".to_string(),
+                "websocket".to_string(),
+                "long_timeout".to_string()
+            ]
+        );
     }
 }

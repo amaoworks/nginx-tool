@@ -207,7 +207,8 @@ App 层是 TUI 的中枢：
 Domain 层定义业务对象和规则：
 
 - `Site`：站点名、域名、类型、启用状态、目标、SSL 状态。
-- `SiteConfig`：表单字段、注入槽、模板类型。
+- `ManagedSiteConfig`：托管模式下的表单字段、能力开关、模板类型、兼容状态。
+- `SiteConfig`：高级模式下的表单字段、注入槽、模板类型。
 - `Certificate`：证书名、域名列表、过期时间、剩余天数、关联站点。
 - `Backup`：文件名、大小、创建时间、路径。
 - `ServiceStatus`：运行状态、版本、systemd 状态摘要。
@@ -309,7 +310,8 @@ pub enum Route {
 pub enum SitesRoute {
     List,
     New,
-    EditForm { site_name: String },
+    EditManaged { site_name: String },
+    EditAdvanced { site_name: String },
     EditRaw { site_name: String },
 }
 ```
@@ -585,7 +587,8 @@ ui/layout.rs
 
 - `SitesRoute::List`
 - `SitesRoute::New`
-- `SitesRoute::EditForm`
+- `SitesRoute::EditManaged`
+- `SitesRoute::EditAdvanced`
 - `SitesRoute::EditRaw`
 
 核心流程：
@@ -594,13 +597,14 @@ ui/layout.rs
 - 用 `sites-enabled` 符号链接判断启用状态。
 - 解析 `server_name`、`proxy_pass`、`root`。
 - 交叉匹配证书状态。
-- 新建时用模板渲染。
+- 新建时优先走托管模式：基础模板 + 能力开关渲染。
+- 编辑时优先恢复托管配置；无法恢复时降级到高级模式或原始模式。
 - 保存时执行校验、写入、`nginx -t`、按需 reload。
 
 快速提交：
 
-- `Ctrl+Enter` 表示“快速提交当前表单”。
-- 必须执行完整字段校验。
+- 不保留“跳过校验直接提交”的设计。
+- 所有提交入口都必须执行完整字段校验。
 - 不允许绕过站点名、域名、目标、重复文件等校验。
 
 ### 11.4 证书管理
@@ -762,11 +766,11 @@ sites_enabled = ["app.conf"]   # 实际启用的站点名
 8. 失败则提示"是否回滚到还原前备份"，用户确认后用 pre-restore 备份重复 4-7 步。
 9. 二次失败时保留临时目录并展示完整错误，等待人工干预，**不自动二次回滚**。
 
-## 十二、Nginx 配置模板与注入槽
+## 十二、Nginx 配置模板、托管标记与注入槽
 
 ### 12.1 模板策略
 
-首版 Rust 模板不直接复用 Bash 的 `sed` 替换流程，而是使用 `minijinja`。
+首版 Rust 模板不直接复用 Bash 的 `sed` 替换流程，而是使用 `minijinja`。模板系统以“**基础模板 + 托管特性开关**”为主，注入槽只作为高级模式的补充能力。
 
 #### 12.1.1 模板加载方式
 
@@ -784,7 +788,7 @@ const EMBY_TPL: &str  = include_str!("../templates/emby.conf.j2");
 const STATIC_TPL: &str = include_str!("../templates/static.conf.j2");
 ```
 
-注入槽预定义片段（`templates/snippets/*.j2`）同样使用 `include_str!` 加载，并在启动时注册到一个静态片段表。
+高级模式使用的预定义片段可同样通过 `include_str!` 加载，并在启动时注册到一个静态片段表。
 
 > **与 Bash 版模板的关系：** Bash 版 `templates/*.template` 在 Bash 工具退役前保持不动，TUI 不读、不写、不引用。新增模板能力只在 `tui-next/templates/` 维护。
 
@@ -794,15 +798,40 @@ const STATIC_TPL: &str = include_str!("../templates/static.conf.j2");
 |------|------|
 | `site_name` | 站点名 |
 | `domain_name` | server_name |
+| `domain_aliases` | 附加域名 |
 | `upstream_scheme` | `http` 或 `https` |
 | `upstream_target` | 解析后的上游地址 |
 | `upstream_host` | HTTPS 上游 SNI 使用 |
 | `static_root` | 静态站点根目录 |
+| `feature_streaming` | 反向代理：流式响应 / AI API |
+| `feature_websocket` | 反向代理：WebSocket |
+| `feature_large_body` | 反向代理：大请求体 / 上传 |
+| `feature_cors` | 反向代理：浏览器跨域 CORS |
+| `feature_long_timeout` | 反向代理：长超时 |
+| `feature_spa_mode` | 静态站点：SPA 单页 |
+| `feature_static_cache` | 静态站点：静态资源缓存 |
+| `feature_block_sensitive` | 静态站点：敏感路径保护 |
 | `custom_before_location` | server 级注入槽 |
 | `custom_inside_location` | location 内注入槽 |
 | `custom_after_location` | location 后注入槽 |
 
-### 12.2 注入槽标记
+### 12.2 托管标记
+
+工具生成的托管配置必须包含稳定元信息标记，用于支持“一键维护”：
+
+```nginx
+# nginx-tools:managed type=proxy
+# nginx-tools:features=streaming,websocket,cors
+```
+
+要求：
+
+- `type` 至少包含 `proxy` / `emby` / `static`
+- `features` 记录当前启用的托管能力开关
+- 标记由工具生成，普通用户不需要手动维护
+- 再次进入编辑页时，优先根据托管标记恢复托管表单
+
+### 12.3 注入槽标记
 
 模板必须包含稳定标记：
 
@@ -819,11 +848,27 @@ const STATIC_TPL: &str = include_str!("../templates/static.conf.j2");
 
 解析规则：
 
-- 标记存在：提取标记之间内容。
+- 托管标记完整：优先进入托管模式。
+- 托管标记缺失但注入槽标记完整：进入高级模式或兼容模式，只解析标准字段与注入槽。
 - 标记缺失：进入兼容模式，只解析标准字段，不覆盖未知自定义内容。
-- 兼容模式保存表单时必须提示：`该配置缺少注入槽标记，表单保存可能覆盖自定义配置，建议使用原始配置模式`。
+- 兼容模式保存表单时必须提示：`该配置缺少托管标记或注入槽标记，表单保存可能覆盖自定义配置，建议使用原始配置模式`。
 
-### 12.3 原始配置编辑
+### 12.4 解析优先级与降级策略
+
+编辑站点时的恢复顺序必须固定为：
+
+1. **托管标记**：优先恢复站点类型与能力开关。
+2. **工具模板特征**：若托管标记缺失，尝试根据稳定字段与模板特征恢复。
+3. **启发式解析**：根据 `server_name`、`proxy_pass`、`root` 等字段做有限推断。
+4. **兼容 / 原始模式**：若无法可靠恢复托管意图，则不再强行进入托管编辑。
+
+降级原则：
+
+- 能可靠恢复主体结构但无法恢复全部开关时，进入兼容模式并显示黄色提示。
+- 检测到用户手工修改导致托管意图与配置主体明显偏离时，优先建议进入原始模式。
+- 原始模式永远保留，不得被托管模式替代。
+
+### 12.5 原始配置编辑
 
 原始配置模式：
 
@@ -903,7 +948,7 @@ pub enum NgToolError {
 
 写入顺序：
 
-1. 渲染模板到内存。
+1. 根据站点类型选择基础模板，并根据托管能力开关渲染到内存。
 2. 写入临时文件 `~/.local/ngtool/tmp/<site>.conf`，并 `fsync`。
 3. 校验目标文件 `/etc/nginx/sites-available/<site>.conf` 不存在（race 检测：用 `O_CREAT | O_EXCL`）。
 4. 原子重命名到目标路径。
@@ -917,13 +962,18 @@ pub enum NgToolError {
 写入顺序：
 
 1. 读取原文件，记录 `mtime_before`。
-2. 保存原文件快照到 `~/.local/ngtool/tmp/rollback/<site>-<timestamp>.conf`。
-3. 写入临时文件并 `fsync`。
-4. **mtime 复检**：再次读取目标 `mtime_now`，若 `mtime_now != mtime_before` 立即中止并提示外部修改。
-5. 原子替换目标文件。
-6. 如果 `Ctrl+S`，执行 `nginx -t`。
-7. 测试失败时使用快照恢复原文件，再次 `nginx -t`，若仍失败保留两份备份并报告详细错误。
-8. 测试通过后 reload。
+2. 优先解析托管标记与能力开关；若无法恢复则降级到高级模式或原始模式。
+3. 保存原文件快照到 `~/.local/ngtool/tmp/rollback/<site>-<timestamp>.conf`。
+4. 根据当前编辑模式生成待写入内容：
+   - 托管模式：基础模板 + 托管能力开关
+   - 高级模式：基础模板 + 托管能力开关 + 注入槽内容
+   - 原始模式：直接使用编辑器文本
+5. 写入临时文件并 `fsync`。
+6. **mtime 复检**：再次读取目标 `mtime_now`，若 `mtime_now != mtime_before` 立即中止并提示外部修改。
+7. 原子替换目标文件。
+8. 如果 `Ctrl+S`，执行 `nginx -t`。
+9. 测试失败时使用快照恢复原文件，再次 `nginx -t`，若仍失败保留两份备份并报告详细错误。
+10. 测试通过后 reload。
 
 `Ctrl+W` 仅保存时：
 

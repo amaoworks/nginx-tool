@@ -30,6 +30,22 @@ pub struct RenderParams {
     pub upstream_target: String,
     /// 静态站点根目录（仅静态）
     pub static_root: String,
+    /// 托管特性：流式响应 / AI API
+    pub feature_streaming: bool,
+    /// 托管特性：WebSocket
+    pub feature_websocket: bool,
+    /// 托管特性：大请求体 / 上传
+    pub feature_large_body: bool,
+    /// 托管特性：浏览器跨域 CORS
+    pub feature_cors: bool,
+    /// 托管特性：长超时
+    pub feature_long_timeout: bool,
+    /// 托管特性：SPA 单页
+    pub feature_spa_mode: bool,
+    /// 托管特性：静态资源缓存
+    pub feature_static_cache: bool,
+    /// 托管特性：敏感路径保护
+    pub feature_block_sensitive: bool,
     /// server 级注入槽内容
     pub custom_before_location: String,
     /// location 内注入槽内容
@@ -47,6 +63,14 @@ impl Default for RenderParams {
             upstream_scheme: "http".into(),
             upstream_target: String::new(),
             static_root: String::new(),
+            feature_streaming: false,
+            feature_websocket: false,
+            feature_large_body: false,
+            feature_cors: false,
+            feature_long_timeout: false,
+            feature_spa_mode: false,
+            feature_static_cache: true,
+            feature_block_sensitive: false,
             custom_before_location: String::new(),
             custom_inside_location: String::new(),
             custom_after_location: String::new(),
@@ -84,6 +108,17 @@ pub fn render(kind: SiteKind, params: &RenderParams) -> Result<String, String> {
         ("upstream_scheme", params.upstream_scheme.clone()),
         ("upstream_target", params.upstream_target.clone()),
         ("static_root", params.static_root.clone()),
+        ("feature_streaming", params.feature_streaming.to_string()),
+        ("feature_websocket", params.feature_websocket.to_string()),
+        ("feature_large_body", params.feature_large_body.to_string()),
+        ("feature_cors", params.feature_cors.to_string()),
+        ("feature_long_timeout", params.feature_long_timeout.to_string()),
+        ("feature_spa_mode", params.feature_spa_mode.to_string()),
+        ("feature_static_cache", params.feature_static_cache.to_string()),
+        (
+            "feature_block_sensitive",
+            params.feature_block_sensitive.to_string(),
+        ),
         (
             "custom_before_location",
             if params.custom_before_location.is_empty() {

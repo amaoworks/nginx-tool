@@ -1,6 +1,14 @@
 server {
     listen 80;
     server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
+    # nginx-tools:managed type=proxy
+    # nginx-tools:features={% if feature_streaming == "true" %}streaming,{% endif %}{% if feature_websocket == "true" %}websocket,{% endif %}{% if feature_large_body == "true" %}large_body,{% endif %}{% if feature_cors == "true" %}cors,{% endif %}{% if feature_long_timeout == "true" %}long_timeout,{% endif %}
+
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+{% if feature_large_body == "true" %}
+    client_max_body_size 50m;
+{% endif %}
 
     # nginx-tools:custom-before-location:start
     {{ custom_before_location | safe }}
@@ -12,6 +20,30 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+{% if feature_websocket == "true" or feature_streaming == "true" %}
+        proxy_http_version 1.1;
+{% endif %}
+{% if feature_websocket == "true" %}
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+{% endif %}
+{% if feature_streaming == "true" %}
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 86400;
+        add_header X-Accel-Buffering "no";
+{% endif %}
+{% if feature_long_timeout == "true" %}
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+{% endif %}
+{% if feature_cors == "true" %}
+        add_header Access-Control-Allow-Origin *;
+        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS";
+        add_header Access-Control-Allow-Headers "Origin, Content-Type, Accept";
+{% endif %}
         # nginx-tools:custom-inside-location:start
         {{ custom_inside_location | safe }}
         # nginx-tools:custom-inside-location:end
