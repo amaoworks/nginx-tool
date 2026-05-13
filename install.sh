@@ -4,20 +4,22 @@
 # Nginx-Tools 安装 / 更新 / 卸载脚本
 # 支持: Debian / Ubuntu  (x86_64 / aarch64)
 # 用法:
-#   bash install.sh                # 检测状态后进入管理菜单
-#   bash install.sh shell          # 安装 Shell 版（Bash 脚本）
-#   bash install.sh tui            # 安装 TUI 版（ngtool 二进制）
-#   bash install.sh status         # 检测当前安装状态 / 最新版本
-#   bash install.sh update         # 更新已安装组件（shell / tui）
-#   bash install.sh uninstall      # 卸载（自动检测已安装组件）
+#   bash install.sh                              # 检测状态后进入管理菜单
+#   bash install.sh shell                        # 安装 Shell 版（Bash 脚本）
+#   bash install.sh tui                          # 安装 TUI 版（ngtool 二进制）
+#   bash install.sh status                       # 检测当前安装状态 / 最新版本
+#   bash install.sh update                       # 更新已安装组件（shell / tui）
+#   bash install.sh uninstall                    # 卸载（自动检测已安装组件）
+#   bash install.sh --proxy https://ghfast.top   # 启用 GitHub 链接加速
 #
 #   # 远程执行
-#   curl -fsSL <URL> | bash                      # 检测状态后进入管理菜单
-#   curl -fsSL <URL> | bash -s -- shell          # 远程安装 Shell
-#   curl -fsSL <URL> | bash -s -- tui            # 远程安装 TUI
-#   curl -fsSL <URL> | bash -s -- status         # 检测安装状态
-#   curl -fsSL <URL> | bash -s -- update         # 更新已安装组件
-#   curl -fsSL <URL> | bash -s -- uninstall      # 远程卸载
+#   curl -fsSL <URL> | bash                                      # 检测状态后进入管理菜单
+#   curl -fsSL <URL> | bash -s -- shell                          # 远程安装 Shell
+#   curl -fsSL <URL> | bash -s -- tui                            # 远程安装 TUI
+#   curl -fsSL <URL> | bash -s -- status                         # 检测安装状态
+#   curl -fsSL <URL> | bash -s -- update                         # 更新已安装组件
+#   curl -fsSL <URL> | bash -s -- uninstall                      # 远程卸载
+#   curl -fsSL <URL> | bash -s -- --proxy https://ghfast.top tui # 启用 GitHub 加速后远程安装 TUI
 # ============================================================
 
 set -e
@@ -39,6 +41,7 @@ INSTALL_DIR="$REAL_HOME/nginx"
 TUI_BIN_PATH="/usr/local/bin/ngtool"
 NG_ALIAS_PATH="${INSTALL_DIR}/shell/nginx-site.sh"
 NGMON_ALIAS_PATH="${INSTALL_DIR}/shell/nginx-monitor.sh"
+GITHUB_PROXY=""
 
 # ============================================================
 # 颜色与输出
@@ -63,6 +66,9 @@ header() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BOLD}  🌐 Nginx-Tools 安装管理${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    if [ -n "${GITHUB_PROXY:-}" ]; then
+        echo -e "  ${DIM}GitHub 加速: ${GITHUB_PROXY}${NC}"
+    fi
     echo ""
 }
 
@@ -86,6 +92,72 @@ ask_line() {
         read -p "$prompt" -r "$var_name"
     else
         read -p "$prompt" -r "$var_name" </dev/tty
+    fi
+}
+
+# ============================================================
+# GitHub 加速
+# ============================================================
+
+normalize_proxy_prefix() {
+    local proxy="$1"
+    proxy="${proxy%/}"
+    printf '%s' "$proxy"
+}
+
+apply_github_proxy() {
+    local url="$1"
+
+    if [ -z "${GITHUB_PROXY:-}" ]; then
+        printf '%s' "$url"
+        return 0
+    fi
+
+    case "$url" in
+        "${GITHUB_PROXY}"/http://*|"${GITHUB_PROXY}"/https://*)
+            printf '%s' "$url"
+            return 0
+            ;;
+        https://github.com/*|http://github.com/*|https://api.github.com/*|http://api.github.com/*|https://raw.githubusercontent.com/*|http://raw.githubusercontent.com/*)
+            printf '%s/%s' "$GITHUB_PROXY" "$url"
+            return 0
+            ;;
+        *)
+            printf '%s' "$url"
+            return 0
+            ;;
+    esac
+}
+
+git_repo_url() {
+    apply_github_proxy "$REPO_URL"
+}
+
+release_api_url() {
+    apply_github_proxy "$RELEASE_API"
+}
+
+release_page_url() {
+    apply_github_proxy "$RELEASE_PAGE"
+}
+
+git_pull_repo() {
+    local repo_path="$1"
+    local branch="${2:-}"
+
+    if [ -n "${GITHUB_PROXY:-}" ]; then
+        local repo_url
+        repo_url=$(git_repo_url)
+        if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
+            git -C "$repo_path" pull --ff-only "$repo_url" "$branch" 2>/dev/null \
+                || git -C "$repo_path" pull --rebase "$repo_url" "$branch" 2>/dev/null
+        else
+            git -C "$repo_path" pull --ff-only "$repo_url" 2>/dev/null \
+                || git -C "$repo_path" pull --rebase "$repo_url" 2>/dev/null
+        fi
+    else
+        git -C "$repo_path" pull --ff-only 2>/dev/null \
+            || git -C "$repo_path" pull --rebase 2>/dev/null
     fi
 }
 
@@ -475,8 +547,9 @@ install_shell() {
     # 克隆或更新仓库
     if [ -d "$INSTALL_DIR/.git" ]; then
         info "检测到已有安装，正在更新..."
-        cd "$INSTALL_DIR"
-        git pull --ff-only 2>/dev/null || git pull --rebase 2>/dev/null || { error "仓库更新失败，请检查网络连接"; exit 1; }
+        local current_branch
+        current_branch=$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+        git_pull_repo "$INSTALL_DIR" "$current_branch" || { error "仓库更新失败，请检查网络连接"; exit 1; }
         success "已更新到最新版本"
     else
         if [ -d "$INSTALL_DIR" ]; then
@@ -489,7 +562,7 @@ install_shell() {
                 exit 1
             fi
         fi
-        git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null || { error "仓库克隆失败，请检查网络连接"; exit 1; }
+        git clone "$(git_repo_url)" "$INSTALL_DIR" 2>/dev/null || { error "仓库克隆失败，请检查网络连接"; exit 1; }
         success "已克隆到 $INSTALL_DIR"
     fi
 
@@ -537,7 +610,7 @@ resolve_tui_asset() {
         json=$(curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             -H "User-Agent: nginx-tool-installer" \
-            "$RELEASE_API" 2>/dev/null || true)
+            "$(release_api_url)" 2>/dev/null || true)
         if [ -n "$json" ]; then
             # 用 grep + sed 解析（不依赖 jq）
             url=$(printf '%s' "$json" \
@@ -556,13 +629,13 @@ resolve_tui_asset() {
     if [ -z "$url" ]; then
         if [ "$quiet" != "quiet" ]; then
             error "无法解析最新发布版本（API 调用失败或暂无 Release）"
-            echo -e "     请手动访问: ${CYAN}${RELEASE_PAGE}${NC}"
+            echo -e "     请手动访问: ${CYAN}$(release_page_url)${NC}"
             exit 1
         fi
         return 1
     fi
 
-    TUI_DOWNLOAD_URL="$url"
+    TUI_DOWNLOAD_URL=$(apply_github_proxy "$url")
     TUI_ASSET_NAME=$(basename "$url")
     ASSET_VERSION=$(normalize_version "${ASSET_VERSION:-unknown}")
     if [ "$quiet" != "quiet" ]; then
@@ -698,7 +771,7 @@ show_status() {
     if [ "$shell_installed" = "yes" ]; then
         local local_head remote_head
         local_head=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)
-        remote_head=$(git -C "$INSTALL_DIR" ls-remote origin -h "refs/heads/${shell_branch}" 2>/dev/null | awk '{print $1}' | head -n1)
+        remote_head=$(git ls-remote "$(git_repo_url)" -h "refs/heads/${shell_branch}" 2>/dev/null | awk '{print $1}' | head -n1)
         if [ -n "$remote_head" ] && [ "$local_head" = "$remote_head" ]; then
             shell_update="已是最新"
         elif [ -n "$remote_head" ]; then
@@ -749,7 +822,9 @@ update_shell() {
     fi
 
     info "更新 Shell 版..."
-    git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || git -C "$INSTALL_DIR" pull --rebase 2>/dev/null || {
+    local current_branch
+    current_branch=$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    git_pull_repo "$INSTALL_DIR" "$current_branch" || {
         error "Shell 版更新失败，请检查网络连接"
         return 1
     }
@@ -918,7 +993,7 @@ do_uninstall() {
 usage() {
     cat <<'EOF'
 
-用法: bash install.sh [命令]
+用法: bash install.sh [--proxy URL] [命令]
 
 命令:
   （无参数）      先检测安装状态，再进入安装 / 更新 / 卸载菜单（默认）
@@ -929,19 +1004,70 @@ usage() {
   uninstall       卸载（自动检测并移除已安装组件）
   help, -h        显示本帮助
 
+选项:
+  --proxy URL     为 GitHub 仓库 / Release API / 二进制下载添加加速前缀
+                  例如: https://ghfast.top 或 https://ghfast.top/
+
 示例:
   sudo bash install.sh
-  sudo bash install.sh tui
+  sudo bash install.sh --proxy https://ghfast.top tui
+  sudo bash install.sh --proxy=https://ghfast.top update
   sudo bash install.sh status
-  sudo bash install.sh update
   sudo bash install.sh uninstall
+  curl -fsSL <URL> | bash -s -- --proxy https://ghfast.top shell
 
 EOF
 }
 
 MODE=""
+COMMAND=""
 
-case "${1:-}" in
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --proxy)
+                if [ $# -lt 2 ]; then
+                    error "--proxy 需要提供一个 URL 前缀"
+                    usage
+                    exit 1
+                fi
+                GITHUB_PROXY=$(normalize_proxy_prefix "$2")
+                shift 2
+                ;;
+            --proxy=*)
+                GITHUB_PROXY=$(normalize_proxy_prefix "${1#*=}")
+                shift
+                ;;
+            "")
+                shift
+                ;;
+            shell|tui|install|status|check|update|upgrade|uninstall|remove|help|-h|--help)
+                if [ -n "$COMMAND" ]; then
+                    error "不支持同时指定多个命令: $COMMAND $1"
+                    usage
+                    exit 1
+                fi
+                COMMAND="$1"
+                shift
+                ;;
+            *)
+                error "未知参数: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ -n "$GITHUB_PROXY" ] && ! printf '%s' "$GITHUB_PROXY" | grep -Eq '^https?://[^[:space:]]+$'; then
+        error "无效的 --proxy 参数: $GITHUB_PROXY"
+        echo -e "     示例: ${CYAN}bash install.sh --proxy https://ghfast.top tui${NC}"
+        exit 1
+    fi
+}
+
+parse_args "$@"
+
+case "${COMMAND:-}" in
     ""|install)
         choose_default_action
         ;;
@@ -970,7 +1096,7 @@ case "${1:-}" in
         exit 0
         ;;
     *)
-        error "未知命令: $1"
+        error "未知命令: $COMMAND"
         usage
         exit 1
         ;;

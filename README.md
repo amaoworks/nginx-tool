@@ -63,6 +63,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/in
 
 # 或通过管道执行
 curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash
+
+# 如 GitHub 较慢，可同时为安装脚本下载和后续 GitHub 请求启用加速
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- --proxy https://ghfast.top
 ```
 
 ### 直接指定模式
@@ -74,11 +77,15 @@ curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.s
 # 只装 TUI 版（自动识别系统架构 amd64 / arm64）
 curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- tui
 
+# 只装 TUI 版（GitHub 加速）
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- --proxy https://ghfast.top tui
+
 # 手动克隆后执行
 git clone https://github.com/amaoworks/nginx-tool.git ~/nginx
-sudo bash ~/nginx/install.sh        # 交互式
-sudo bash ~/nginx/install.sh shell  # Shell 版
-sudo bash ~/nginx/install.sh tui    # TUI 版
+sudo bash ~/nginx/install.sh                            # 交互式
+sudo bash ~/nginx/install.sh shell                      # Shell 版
+sudo bash ~/nginx/install.sh tui                        # TUI 版
+sudo bash ~/nginx/install.sh --proxy https://ghfast.top tui  # TUI 版（GitHub 加速）
 ```
 
 ### 检查安装状态与更新
@@ -89,10 +96,12 @@ sudo bash ~/nginx/install.sh status
 
 # 更新所有已安装组件；未安装的组件会自动跳过
 sudo bash ~/nginx/install.sh update
+sudo bash ~/nginx/install.sh --proxy https://ghfast.top update
 
 # 远程执行
 curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- status
 curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- update
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash -s -- --proxy https://ghfast.top update
 
 # 无参数远程执行也会先检测状态；检测到已安装组件可更新时，回车默认执行更新
 curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh | bash
