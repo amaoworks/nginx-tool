@@ -1,3 +1,4 @@
 /target
+tui-next/target/
 **/*.rs.bk
 Cargo.lock.tmp

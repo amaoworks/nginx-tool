@@ -8,3 +8,5 @@
 - `README.md` 精简内容，去除冗余细节，保持核心信息；新增致谢 Linux.do 社区与 @sixsixsix。
 - 创建 `LICENSE` 文件（MIT 协议），完善开源协议相关文件。
 - `AGENTS.md` 补充技术栈、项目结构、构建测试、代码规范、发布流程、Git 工作流等细节。
+- `tui-next/.gitignore` 迁移至项目根目录 `.gitignore`，覆盖所有 Rust 产物。
+- `tui-next/doc/changelog.md` 迁移至 `tui-next/CHANGELOG.md`，整理 TUI 模块文件结构。

@@ -26,9 +26,11 @@ Nginx-Tools/
 │       ├── proxy.template  # 通用反向代理
 │       ├── emby.template   # Emby/Jellyfin 流媒体
 │       └── static.template # 静态网站
+├── .gitignore              # 项目级 gitignore（覆盖 Rust 产物）
 ├── tui-next/
 │   ├── Cargo.toml          # Rust 项目配置
 │   ├── build.rs            # 构建脚本（注入版本号）
+│   ├── CHANGELOG.md        # TUI 设计变更记录
 │   ├── src/                # Rust 源码
 │   │   ├── main.rs         # 入口
 │   │   ├── app/            # 应用层（状态管理）
@@ -44,8 +46,7 @@ Nginx-Tools/
 │       ├── design.md
 │       ├── architecture.md
 │       ├── execution.md
-│       ├── risks.md
-│       └── changelog.md
+│       └── risks.md
 ├── .github/
 │   └── workflows/
 │       └── release.yml     # CI 构建流程
