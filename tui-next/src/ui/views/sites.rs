@@ -97,9 +97,14 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
             Span::styled("○ 停用", Style::default().fg(theme::FG_DIM))
         };
 
+        let domains = if s.all_domains.is_empty() {
+            "(无 server_name)".to_string()
+        } else {
+            s.all_domains.join(", ")
+        };
         let domain_target = format!(
             "{} → {}",
-            s.primary_domain.as_deref().unwrap_or("(无 server_name)"),
+            domains,
             s.target.as_deref().unwrap_or("(未解析)")
         );
 
@@ -182,6 +187,15 @@ fn render_detail(frame: &mut Frame, area: Rect, state: &AppState) {
         ),
         Span::styled("▏ ", Style::default().fg(theme::FG_DIM)),
         Span::raw(format!("类型={} ", s.site_type.label())),
+        Span::styled("▏ ", Style::default().fg(theme::FG_DIM)),
+        Span::raw(format!(
+            "域名={} ",
+            if s.all_domains.is_empty() {
+                "(无 server_name)".to_string()
+            } else {
+                s.all_domains.join(", ")
+            }
+        )),
         Span::styled("▏ ", Style::default().fg(theme::FG_DIM)),
         Span::raw(format!(
             "目标={} ",

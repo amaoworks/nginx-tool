@@ -98,8 +98,7 @@ fn render_buttons(frame: &mut Frame, area: Rect, state: &AppState) {
     for (i, btn) in ServiceButton::ALL.iter().enumerate() {
         let focused = state.service.focused == *btn;
         let busy = state.service.running == Some(*btn);
-        let disabled = readonly
-            && matches!(btn, ServiceButton::Reload | ServiceButton::Restart);
+        let disabled = readonly && matches!(btn, ServiceButton::Reload | ServiceButton::Restart);
         let label = if busy {
             format!("[ {}（执行中）]", btn.label())
         } else {

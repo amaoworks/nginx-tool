@@ -47,6 +47,19 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
     lines.push(Line::from(""));
 
+    // 附加域名
+    let aliases_focused = edit.focused == EditFocus::DomainAliases;
+    lines.push(field_label("附加域名:", aliases_focused));
+    lines.push(input_field(
+        &edit.domain_aliases,
+        aliases_focused,
+        "www.example.com, m.example.com（可选）",
+    ));
+    if let Some(err) = edit.field_errors.get("domain_aliases") {
+        lines.push(error_line(err));
+    }
+    lines.push(Line::from(""));
+
     // 代理目标（非静态站点）
     if edit.site_type != crate::domain::site::SiteType::Static {
         let target_focused = edit.focused == EditFocus::Target;

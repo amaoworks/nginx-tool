@@ -754,6 +754,7 @@ impl LogsState {
 pub enum EditFocus {
     #[default]
     Domain,
+    DomainAliases,
     Target,
     Scheme,
     SlotSelector,
@@ -770,6 +771,8 @@ pub struct SiteEditState {
     pub focused: EditFocus,
     /// 域名
     pub domain: String,
+    /// 附加域名（逗号或空格分隔）
+    pub domain_aliases: String,
     /// 代理目标（显示格式，如 "127.0.0.1:8080"）
     pub target: String,
     /// 上游协议 http/https
@@ -835,6 +838,7 @@ pub struct RawSnapshot {
 #[derive(Debug, Clone)]
 pub struct EditSnapshot {
     pub domain: String,
+    pub domain_aliases: String,
     pub target: String,
     pub upstream_scheme: String,
     pub static_root: String,
@@ -848,6 +852,7 @@ impl Default for SiteEditState {
             site_name: String::new(),
             focused: EditFocus::default(),
             domain: String::new(),
+            domain_aliases: String::new(),
             target: String::new(),
             upstream_scheme: "http".into(),
             site_type: crate::domain::site::SiteType::Unknown,
@@ -887,6 +892,13 @@ impl SiteEditState {
         Self {
             site_name: site_name.to_string(),
             domain: parsed.domains.first().cloned().unwrap_or_default(),
+            domain_aliases: parsed
+                .domains
+                .iter()
+                .skip(1)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" "),
             target: parsed.upstream_target.clone().unwrap_or_default(),
             upstream_scheme: parsed
                 .upstream_scheme
@@ -921,6 +933,12 @@ impl SiteEditState {
         } else if let Err(e) = crate::template::renderer::validate_domain(&self.domain) {
             self.set_error("domain", e);
         }
+        for alias in split_aliases(&self.domain_aliases) {
+            if let Err(e) = crate::template::renderer::validate_domain(alias) {
+                self.set_error("domain_aliases", format!("附加域名 '{}': {}", alias, e));
+                break;
+            }
+        }
         if self.site_type != crate::domain::site::SiteType::Static {
             if self.target.trim().is_empty() {
                 self.set_error("target", "目标地址不能为空".into());
@@ -944,7 +962,7 @@ impl SiteEditState {
         crate::template::renderer::RenderParams {
             site_name: self.site_name.clone(),
             domain_name: self.domain.trim().to_string(),
-            domain_aliases: String::new(),
+            domain_aliases: split_aliases(&self.domain_aliases).join(" "),
             upstream_scheme,
             upstream_target,
             static_root: self.static_root.clone(),
@@ -978,7 +996,8 @@ impl SiteEditState {
     /// Tab 切换焦点
     pub fn move_focus_forward(&mut self) {
         self.focused = match self.focused {
-            EditFocus::Domain => EditFocus::Target,
+            EditFocus::Domain => EditFocus::DomainAliases,
+            EditFocus::DomainAliases => EditFocus::Target,
             EditFocus::Target => EditFocus::Scheme,
             EditFocus::Scheme => EditFocus::SlotSelector,
             EditFocus::SlotSelector => EditFocus::SlotContent,
@@ -996,7 +1015,8 @@ impl SiteEditState {
     pub fn move_focus_backward(&mut self) {
         self.focused = match self.focused {
             EditFocus::Domain => EditFocus::TemplateList,
-            EditFocus::Target => EditFocus::Domain,
+            EditFocus::DomainAliases => EditFocus::Domain,
+            EditFocus::Target => EditFocus::DomainAliases,
             EditFocus::Scheme => EditFocus::Target,
             EditFocus::SlotSelector => EditFocus::Scheme,
             EditFocus::SlotContent => EditFocus::SlotSelector,
@@ -1005,7 +1025,7 @@ impl SiteEditState {
         if self.site_type == crate::domain::site::SiteType::Static
             && (self.focused == EditFocus::Scheme || self.focused == EditFocus::Target)
         {
-            self.focused = EditFocus::Domain;
+            self.focused = EditFocus::DomainAliases;
         }
     }
 
@@ -1042,6 +1062,7 @@ impl SiteEditState {
     pub fn seal_original(&mut self) {
         self.original_snapshot = Some(Box::new(EditSnapshot {
             domain: self.domain.clone(),
+            domain_aliases: self.domain_aliases.clone(),
             target: self.target.clone(),
             upstream_scheme: self.upstream_scheme.clone(),
             static_root: self.static_root.clone(),
@@ -1057,6 +1078,7 @@ impl SiteEditState {
             return false;
         };
         self.domain = snap.domain.clone();
+        self.domain_aliases = snap.domain_aliases.clone();
         self.target = snap.target.clone();
         self.upstream_scheme = snap.upstream_scheme.clone();
         self.static_root = snap.static_root.clone();
@@ -1612,9 +1634,8 @@ impl AppState {
                         self.certs.pending_refresh = true;
                     }
                     Err(e) => {
-                        self.certs.push_output([
-                            "── 安装 deploy hook 失败 ──".into(),
-                        ]);
+                        self.certs
+                            .push_output(["── 安装 deploy hook 失败 ──".into()]);
                         self.certs
                             .push_output(e.to_string().lines().map(String::from));
                         self.notification =
@@ -1807,11 +1828,17 @@ impl AppState {
         match &self.route {
             Route::Sites(SitesRoute::New) => matches!(
                 self.site_form.focused,
-                FormField::SiteName | FormField::Domain | FormField::Target
+                FormField::SiteName
+                    | FormField::Domain
+                    | FormField::DomainAliases
+                    | FormField::Target
             ),
             Route::Sites(SitesRoute::EditForm { .. }) => matches!(
                 self.site_edit.focused,
-                EditFocus::Domain | EditFocus::Target | EditFocus::SlotContent
+                EditFocus::Domain
+                    | EditFocus::DomainAliases
+                    | EditFocus::Target
+                    | EditFocus::SlotContent
             ),
             // 原始模式与槽位全屏编辑：整页都在接收文本
             Route::Sites(SitesRoute::EditRaw { .. })
@@ -2409,7 +2436,10 @@ impl AppState {
         // 文本输入处理
         if k.modifiers == KeyModifiers::NONE || k.modifiers.contains(KeyModifiers::SHIFT) {
             match self.site_form.focused {
-                FormField::SiteName | FormField::Domain | FormField::DomainAliases | FormField::Target => {
+                FormField::SiteName
+                | FormField::Domain
+                | FormField::DomainAliases
+                | FormField::Target => {
                     match k.code {
                         KeyCode::Char(c) => {
                             let field = match self.site_form.focused {
@@ -2465,6 +2495,7 @@ impl AppState {
                 self.site_form.focused = match first_err_field.as_str() {
                     "site_name" => FormField::SiteName,
                     "domain" => FormField::Domain,
+                    "domain_aliases" => FormField::DomainAliases,
                     "target" => FormField::Target,
                     "cert_checkbox" => FormField::CertCheckbox,
                     _ => FormField::SiteName,
@@ -2706,10 +2737,11 @@ impl AppState {
         // 文本输入
         if k.modifiers == KeyModifiers::NONE || k.modifiers.contains(KeyModifiers::SHIFT) {
             match self.site_edit.focused {
-                EditFocus::Domain | EditFocus::Target => match k.code {
+                EditFocus::Domain | EditFocus::DomainAliases | EditFocus::Target => match k.code {
                     KeyCode::Char(c) => {
                         let field = match self.site_edit.focused {
                             EditFocus::Domain => &mut self.site_edit.domain,
+                            EditFocus::DomainAliases => &mut self.site_edit.domain_aliases,
                             EditFocus::Target => &mut self.site_edit.target,
                             _ => return,
                         };
@@ -2719,6 +2751,7 @@ impl AppState {
                             .field_errors
                             .remove(match self.site_edit.focused {
                                 EditFocus::Domain => "domain",
+                                EditFocus::DomainAliases => "domain_aliases",
                                 EditFocus::Target => "target",
                                 _ => "",
                             });
@@ -2726,6 +2759,7 @@ impl AppState {
                     KeyCode::Backspace => {
                         let field = match self.site_edit.focused {
                             EditFocus::Domain => &mut self.site_edit.domain,
+                            EditFocus::DomainAliases => &mut self.site_edit.domain_aliases,
                             EditFocus::Target => &mut self.site_edit.target,
                             _ => return,
                         };
@@ -3559,8 +3593,7 @@ impl AppState {
                     .as_ref()
                     .is_some_and(|s| s.deploy_hook_present)
                 {
-                    self.notification =
-                        Some(Notification::info("deploy hook 已安装".to_string()));
+                    self.notification = Some(Notification::info("deploy hook 已安装".to_string()));
                     return;
                 }
                 self.modal = Some(crate::ui::modal::Modal::confirm_install_deploy_hook());
@@ -3869,6 +3902,7 @@ mod tests {
     fn seal_and_restore_original_recovers_form_fields() {
         let mut s = SiteEditState::default();
         s.domain = "app.example.com".into();
+        s.domain_aliases = "www.app.example.com".into();
         s.target = "127.0.0.1:8080".into();
         s.upstream_scheme = "http".into();
         s.injection_slots
@@ -3877,6 +3911,7 @@ mod tests {
 
         // 用户修改字段
         s.domain = "messy.example.com".into();
+        s.domain_aliases = "www.messy.example.com".into();
         s.target = "0.0.0.0:80".into();
         s.upstream_scheme = "https".into();
         s.injection_slots
@@ -3886,6 +3921,7 @@ mod tests {
         // Ctrl+D 恢复
         assert!(s.restore_original());
         assert_eq!(s.domain, "app.example.com");
+        assert_eq!(s.domain_aliases, "www.app.example.com");
         assert_eq!(s.target, "127.0.0.1:8080");
         assert_eq!(s.upstream_scheme, "http");
         assert_eq!(
@@ -3899,6 +3935,31 @@ mod tests {
     fn restore_original_returns_false_when_not_sealed() {
         let mut s = SiteEditState::default();
         assert!(!s.restore_original());
+    }
+
+    #[test]
+    fn site_edit_preserves_aliases_when_rendering() {
+        let parsed = crate::template::config_parser::parse_for_edit(
+            r#"
+server {
+    listen 80;
+    server_name app.example.com www.app.example.com m.app.example.com;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+"#,
+        );
+        let s = SiteEditState::from_parsed("app", &parsed);
+        assert_eq!(s.domain, "app.example.com");
+        assert_eq!(s.domain_aliases, "www.app.example.com m.app.example.com");
+
+        let params = s.build_render_params();
+        assert_eq!(params.domain_name, "app.example.com");
+        assert_eq!(
+            params.domain_aliases,
+            "www.app.example.com m.app.example.com"
+        );
     }
 
     #[test]

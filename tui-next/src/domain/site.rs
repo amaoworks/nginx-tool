@@ -679,16 +679,14 @@ pub async fn create_site(
     let mut cert_requested = false;
     if input.request_cert && input.enable_now {
         cert_requested = true;
-        let domain_arg = input.domain.clone();
+        let cert_domains = cert_domains_for_input(&input);
+        let mut cert_cmd = CommandSpec::new("certbot").arg("--nginx");
+        for domain in &cert_domains {
+            cert_cmd = cert_cmd.arg("-d").arg(domain);
+        }
         let cert_result = ctx
             .executor
-            .run(
-                CommandSpec::new("certbot")
-                    .arg("--nginx")
-                    .arg("-d")
-                    .arg(&domain_arg)
-                    .timeout(Duration::from_secs(120)),
-            )
+            .run(cert_cmd.timeout(Duration::from_secs(120)))
             .await;
 
         match cert_result {
@@ -699,7 +697,7 @@ pub async fn create_site(
                     &input.name,
                     AuditResult::Success,
                     started,
-                    json!({"domain": domain_arg}),
+                    json!({"domains": cert_domains}),
                 );
             }
             Err(e) => {
@@ -710,7 +708,7 @@ pub async fn create_site(
                     &input.name,
                     AuditResult::Failure,
                     started,
-                    json!({"error": e.to_string()}),
+                    json!({"domains": cert_domains, "error": e.to_string()}),
                 );
                 log_audit(
                     &ctx,
@@ -736,6 +734,19 @@ pub async fn create_site(
         json!({"enable": input.enable_now, "cert": cert_requested}),
     );
     Ok(CreateSiteOutcome::Ok { cert_requested })
+}
+
+fn cert_domains_for_input(input: &CreateSiteInput) -> Vec<String> {
+    std::iter::once(input.domain.trim())
+        .chain(
+            input
+                .domain_aliases
+                .split(|c: char| c == ',' || c.is_ascii_whitespace())
+                .map(str::trim),
+        )
+        .filter(|domain| !domain.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// 回滚新建站点的已执行步骤
@@ -1004,5 +1015,29 @@ Certificate Name: api
         assert_eq!(map.get("app.example.com"), Some(&67));
         assert_eq!(map.get("www.app.example.com"), Some(&67));
         assert_eq!(map.get("api.example.com"), Some(&5));
+    }
+
+    #[test]
+    fn cert_domains_include_aliases() {
+        let input = CreateSiteInput {
+            name: "app".into(),
+            domain: "app.example.com".into(),
+            domain_aliases: "www.app.example.com, m.app.example.com".into(),
+            kind: crate::template::renderer::SiteKind::Proxy,
+            upstream_scheme: "http".into(),
+            upstream_target: "127.0.0.1:8080".into(),
+            static_root: String::new(),
+            enable_now: true,
+            request_cert: true,
+        };
+
+        assert_eq!(
+            cert_domains_for_input(&input),
+            vec![
+                "app.example.com",
+                "www.app.example.com",
+                "m.app.example.com"
+            ]
+        );
     }
 }
