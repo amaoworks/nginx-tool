@@ -109,7 +109,7 @@ shellcheck shell/*.sh install.sh
 ## 发布流程
 
 ```bash
-# 1. 更新 Cargo.toml 中的 version 字段
+# 1. 更新 tui-next/Cargo.toml 中的 version 字段（必须与 tag 一致，例如 v1.0.6 → version = "1.0.6"）
 # 2. 确保 CHANGELOG.md 记录了本次变更
 # 3. 提交并推送
 git add . && git commit -m "chore: release v1.0.x"
@@ -117,6 +117,10 @@ git add . && git commit -m "chore: release v1.0.x"
 git tag v1.0.x
 git push origin v1.0.x
 ```
+
+> **注意**：`tui-next/Cargo.toml` 的 `version` 字段必须与 tag 版本号保持一致（无 `v` 前缀）。
+> CI 构建时通过 `NGTOOL_BUILD_VERSION` 环境变量注入 tag 版本，若 Cargo.toml 版本滞后，
+> `cargo build` 编译日志仍会显示旧版本号，导致混淆。
 
 - 二进制命名格式：`ngtool-<tag>-linux-<arch>`（amd64 / arm64）
 - 构建环境和运行时目标：Ubuntu 22.04（glibc 2.35），兼容 Debian 11+ / Ubuntu 22.04+
@@ -139,3 +143,4 @@ git push origin v1.0.x
 - 改动修改完需要在 `CHANGELOG.md` 中有简要说明
 - `tui-next/doc/` 下的设计文档需要许可才能改动
 - 思考使用英文，输出使用中文
+- **不要直接推送到远端**，除非用户明确下达推送指令（如用户说"提交到远端"或"push"）。
