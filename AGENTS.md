@@ -128,6 +128,7 @@ git push origin v1.0.x
 
 ## Git 工作流
 
+- git的所有操作都需要指令去触发，例如：commit, push, 合入本地, 提交远端
 - 直接推送 `main` 分支，不强制 PR 流程
 - Commit message 风格：`type: description` 前缀
   - `feat:` — 新功能
@@ -143,4 +144,3 @@ git push origin v1.0.x
 - 改动修改完需要在 `CHANGELOG.md` 中有简要说明
 - `tui-next/doc/` 下的设计文档需要许可才能改动
 - 思考使用英文，输出使用中文
-- **不要直接推送到远端**，除非用户明确下达推送指令（如用户说"提交到远端"或"push"）。
