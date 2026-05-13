@@ -137,6 +137,12 @@ release_api_url() {
     apply_github_proxy "$RELEASE_API"
 }
 
+release_asset_url() {
+    local tag="$1"
+    local asset="$2"
+    apply_github_proxy "https://github.com/${REPO_SLUG}/releases/download/${tag}/${asset}"
+}
+
 release_page_url() {
     apply_github_proxy "$RELEASE_PAGE"
 }
@@ -601,28 +607,63 @@ install_shell() {
 # 解析最新 release 的下载 URL
 resolve_tui_asset() {
     local quiet="${1:-}"
-    local asset="ngtool-*-linux-${ARCH}"
     local url=""
+    local tag=""
 
     # 调用 GitHub Releases API（也兼容 Forgejo / Gitea）
     if command -v curl &>/dev/null; then
-        local json
-        json=$(curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "User-Agent: nginx-tool-installer" \
-            "$(release_api_url)" 2>/dev/null || true)
-        if [ -n "$json" ]; then
-            # 用 grep + sed 解析（不依赖 jq）
-            url=$(printf '%s' "$json" \
-                | tr ',' '\n' \
-                | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*ngtool-[^"]*-linux-'"${ARCH}"'"' \
-                | head -n1 \
-                | sed -E 's/.*"(https?:[^"]*)".*/\1/')
-            ASSET_VERSION=$(printf '%s' "$json" \
-                | tr ',' '\n' \
-                | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
-                | head -n1 \
-                | sed -E 's/.*"([^"]*)"$/\1/')
+        local json api_url
+        for api_url in "$RELEASE_API" "$(release_api_url)"; do
+            [ -n "$api_url" ] || continue
+            json=$(curl -fsSL \
+                -H "Accept: application/vnd.github+json" \
+                -H "User-Agent: nginx-tool-installer" \
+                "$api_url" 2>/dev/null || true)
+            if [ -n "$json" ]; then
+                # 用 grep + sed 解析（不依赖 jq）
+                url=$(printf '%s' "$json" \
+                    | tr ',' '\n' \
+                    | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*ngtool-[^"]*-linux-'"${ARCH}"'"' \
+                    | head -n1 \
+                    | sed -E 's/.*"(https?:[^"]*)".*/\1/')
+                ASSET_VERSION=$(printf '%s' "$json" \
+                    | tr ',' '\n' \
+                    | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                    | head -n1 \
+                    | sed -E 's/.*"([^"]*)"$/\1/')
+            fi
+            [ -n "$url" ] && break
+        done
+
+        if [ -z "$url" ]; then
+            local final_url page_html page_url
+            for page_url in "$RELEASE_PAGE" "$(release_page_url)"; do
+                [ -n "$page_url" ] || continue
+                final_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+                    -H "User-Agent: nginx-tool-installer" \
+                    "$page_url" 2>/dev/null || true)
+                tag=$(printf '%s' "$final_url" \
+                    | sed -nE 's#.*\/releases\/tag\/([^/?#]+).*#\1#p')
+                if [ -z "$tag" ]; then
+                    page_html=$(curl -fsSL \
+                        -H "User-Agent: nginx-tool-installer" \
+                        "$page_url" 2>/dev/null || true)
+                    tag=$(printf '%s' "$page_html" \
+                        | grep -oE '/'"${REPO_SLUG}"'/releases/tag/[^"?# ]+' \
+                        | head -n1 \
+                        | sed -E 's#.*/releases/tag/##')
+                fi
+                [ -n "$tag" ] && break
+            done
+            if [ -n "$tag" ]; then
+                ASSET_VERSION="$tag"
+                TUI_ASSET_NAME="ngtool-${tag}-linux-${ARCH}"
+                TUI_DOWNLOAD_URL=$(release_asset_url "$tag" "$TUI_ASSET_NAME")
+                if [ "$quiet" != "quiet" ]; then
+                    success "最新版本: ${BOLD}${ASSET_VERSION:-unknown}${NC} → ${DIM}${TUI_ASSET_NAME}${NC}"
+                fi
+                return 0
+            fi
         fi
     fi
 
