@@ -243,6 +243,10 @@ mod tests {
         assert!(out.contains("server_name blog.example.com;"));
         assert!(out.contains("root /var/www/blog;"));
         assert!(out.contains("try_files $uri $uri/ =404;"));
+        assert!(out.contains("access_log /var/log/nginx/access.log;"));
+        assert!(out.contains("error_log /var/log/nginx/error.log;"));
+        assert!(out.contains("location ~* \\.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2)$ {"));
+        assert!(out.contains("expires 30d;"));
     }
 
     #[test]

@@ -4,6 +4,9 @@ server {
     root {{ static_root }};
     index index.html index.htm;
 
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+
     # nginx-tools:custom-before-location:start
     {{ custom_before_location | safe }}
     # nginx-tools:custom-before-location:end
@@ -13,6 +16,11 @@ server {
         # nginx-tools:custom-inside-location:start
         {{ custom_inside_location | safe }}
         # nginx-tools:custom-inside-location:end
+    }
+
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2)$ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
     }
 
     # nginx-tools:custom-after-location:start

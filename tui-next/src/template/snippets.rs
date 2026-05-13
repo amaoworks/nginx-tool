@@ -32,12 +32,11 @@ add_header Access-Control-Allow-Headers \"Origin, Content-Type, Accept\";";
 
 /// 访问日志配置
 const ACCESS_LOG: &str = "\
-access_log /var/log/nginx/$site_name.access.log;";
+access_log /var/log/nginx/access.log;";
 
-/// 请求限流
-const RATE_LIMIT: &str = "\
-limit_req_zone $binary_remote_addr zone=general:10m rate=10r/s;
-limit_req zone=general burst=20 nodelay;";
+/// 请求体大小限制（上传/API）
+const CLIENT_BODY_SIZE: &str = "\
+client_max_body_size 50m;";
 
 /// WebSocket 升级头
 const WEBSOCKET_HEADERS: &str = "\
@@ -52,8 +51,16 @@ proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;";
 
-/// 反向代理缓冲控制
-const PROXY_BUFFERS: &str = "\
+/// AI / SSE / 流式响应
+const STREAMING_PROXY: &str = "\
+proxy_http_version 1.1;
+proxy_buffering off;
+proxy_cache off;
+proxy_read_timeout 86400;
+add_header X-Accel-Buffering \"no\";";
+
+/// 普通反向代理缓冲控制
+const STANDARD_PROXY_BUFFERS: &str = "\
 proxy_buffering on;
 proxy_buffer_size 4k;
 proxy_buffers 8 32k;
@@ -62,12 +69,12 @@ proxy_busy_buffers_size 64k;";
 /// 超时设置
 const TIMEOUT_SETTINGS: &str = "\
 proxy_connect_timeout 60s;
-proxy_send_timeout 60s;
-proxy_read_timeout 120s;";
+proxy_send_timeout 300s;
+proxy_read_timeout 300s;";
 
 /// 静态资源缓存
 const STATIC_CACHE: &str = "\
-location ~* \\.(jpg|jpeg|png|gif|ico|css|js|woff2)$ {
+location ~* \\.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2)$ {
     expires 30d;
     add_header Cache-Control \"public, immutable\";
 }";
@@ -105,13 +112,13 @@ static ALL_SNIPPETS: &[Snippet] = &[
         slot: InjectionSlot::BeforeLocation,
     },
     Snippet {
-        name: "访问日志路径",
+        name: "全局访问日志",
         content: ACCESS_LOG,
         slot: InjectionSlot::BeforeLocation,
     },
     Snippet {
-        name: "请求限流模板",
-        content: RATE_LIMIT,
+        name: "大请求体（上传/API）",
+        content: CLIENT_BODY_SIZE,
         slot: InjectionSlot::BeforeLocation,
     },
     // Inside Location 片段
@@ -126,8 +133,13 @@ static ALL_SNIPPETS: &[Snippet] = &[
         slot: InjectionSlot::InsideLocation,
     },
     Snippet {
-        name: "反向代理缓冲控制",
-        content: PROXY_BUFFERS,
+        name: "流式响应（AI/SSE）",
+        content: STREAMING_PROXY,
+        slot: InjectionSlot::InsideLocation,
+    },
+    Snippet {
+        name: "普通代理缓冲",
+        content: STANDARD_PROXY_BUFFERS,
         slot: InjectionSlot::InsideLocation,
     },
     Snippet {
