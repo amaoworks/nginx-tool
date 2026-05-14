@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::state::AppState;
+use crate::ui::cursor::display_col;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -99,4 +100,18 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let p = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(p, inner);
+
+    let cursor_y =
+        inner.y + header_rows + edit.slot_edit_cursor_line.saturating_sub(scroll_offset) as u16;
+    let line_number_width = 7u16;
+    let cursor_x = inner.x
+        + line_number_width
+        + display_col(
+            edit.slot_edit_lines
+                .get(edit.slot_edit_cursor_line)
+                .map(|s| s.as_str())
+                .unwrap_or(""),
+            edit.slot_edit_cursor_col,
+        );
+    frame.set_cursor_position((cursor_x, cursor_y));
 }
