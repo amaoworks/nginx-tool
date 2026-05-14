@@ -351,7 +351,10 @@ fn footer_hints_for_logs(state: &AppState) -> Vec<&'static str> {
             "[Esc] 返回侧栏",
         ],
         LogsFocus::LogContent => vec![
-            "[Space] 暂停",
+            "[↑↓←→] 滚动",
+            "[PgUp/PgDn] 翻页",
+            "[Home/End] 顶部/底部",
+            "[Space] 跟随",
             "[c] 清屏",
             "[/] 搜索",
             "[Esc] 返回侧栏",

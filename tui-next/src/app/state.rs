@@ -18,6 +18,8 @@ const DASHBOARD_AUTO_REFRESH: Duration = Duration::from_secs(30);
 const SITES_AUTO_REFRESH: Duration = Duration::from_secs(60);
 /// 证书页自动刷新间隔。certbot certificates 较慢，给久一些。
 const CERTS_AUTO_REFRESH: Duration = Duration::from_secs(120);
+const LOGS_HORIZONTAL_SCROLL_STEP: i16 = 8;
+const LOGS_PAGE_SCROLL_FACTOR: usize = 1;
 
 /// 运行模式：读写或只读，详见 architecture.md §7.2
 #[derive(Debug, Clone)]
@@ -692,6 +694,10 @@ pub struct LogsState {
     pub match_index: Option<usize>,
     /// 匹配行号列表
     pub match_lines: Vec<usize>,
+    /// 纵向滚动偏移（顶部行为 0）
+    pub vertical_scroll: usize,
+    /// 横向滚动偏移（左侧列为 0）
+    pub horizontal_scroll: u16,
     /// tail 任务句柄（用于取消）
     pub tail_handle: Option<tokio::task::JoinHandle<()>>,
     /// tail 输出接收通道
@@ -711,6 +717,8 @@ impl Default for LogsState {
             search_query: None,
             match_index: None,
             match_lines: Vec::new(),
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
             tail_handle: None,
             tail_rx: None,
             pending_tail_change: false,
@@ -723,6 +731,10 @@ impl LogsState {
     pub fn push_line(&mut self, line: String) {
         if self.buffer.len() >= self.max_lines {
             self.buffer.pop_front();
+            self.vertical_scroll = self.vertical_scroll.saturating_sub(1);
+            for idx in &mut self.match_lines {
+                *idx = idx.saturating_sub(1);
+            }
         }
         self.buffer.push_back(line);
     }
@@ -732,6 +744,8 @@ impl LogsState {
         self.buffer.clear();
         self.match_lines.clear();
         self.match_index = None;
+        self.vertical_scroll = 0;
+        self.horizontal_scroll = 0;
     }
 
     /// 执行搜索，更新 match_lines
@@ -784,6 +798,66 @@ impl LogsState {
         self.search_query = None;
         self.match_lines.clear();
         self.match_index = None;
+    }
+
+    /// 是否自动跟随到最新日志
+    pub fn is_following_tail(&self, visible_lines: usize) -> bool {
+        self.vertical_scroll >= self.max_vertical_scroll(visible_lines)
+    }
+
+    /// 当前可滚动的最大纵向偏移
+    pub fn max_vertical_scroll(&self, visible_lines: usize) -> usize {
+        self.buffer.len().saturating_sub(visible_lines)
+    }
+
+    /// 规范化滚动偏移，避免越界
+    pub fn clamp_scroll(&mut self, visible_lines: usize) {
+        self.vertical_scroll = self.vertical_scroll.min(self.max_vertical_scroll(visible_lines));
+    }
+
+    /// 跳到底部并开启自动跟随
+    pub fn follow_tail(&mut self, visible_lines: usize) {
+        self.vertical_scroll = self.max_vertical_scroll(visible_lines);
+        self.paused = false;
+    }
+
+    /// 垂直滚动；手动滚动会进入暂停，避免新日志抢回底部
+    pub fn scroll_vertical(&mut self, delta: isize, visible_lines: usize) {
+        let max_scroll = self.max_vertical_scroll(visible_lines) as isize;
+        let next = (self.vertical_scroll as isize + delta).clamp(0, max_scroll) as usize;
+        self.vertical_scroll = next;
+        self.paused = self.vertical_scroll < self.max_vertical_scroll(visible_lines);
+    }
+
+    /// 水平滚动
+    pub fn scroll_horizontal(&mut self, delta: i16) {
+        self.horizontal_scroll = self.horizontal_scroll.saturating_add_signed(delta);
+    }
+
+    /// 将指定日志行滚动到可视区域内
+    pub fn ensure_line_visible(&mut self, line_idx: usize, visible_lines: usize) {
+        if visible_lines == 0 {
+            return;
+        }
+        let last_visible = self.vertical_scroll + visible_lines.saturating_sub(1);
+        if line_idx < self.vertical_scroll {
+            self.vertical_scroll = line_idx;
+        } else if line_idx > last_visible {
+            self.vertical_scroll = line_idx + 1 - visible_lines;
+        }
+        self.clamp_scroll(visible_lines);
+    }
+
+    /// 对齐到当前匹配位置
+    pub fn reveal_current_match(&mut self, visible_lines: usize) {
+        let Some(current) = self.match_index else {
+            return;
+        };
+        let Some(&line_idx) = self.match_lines.get(current) else {
+            return;
+        };
+        self.ensure_line_visible(line_idx, visible_lines);
+        self.paused = true;
     }
 
     /// 切换暂停状态
@@ -1524,6 +1598,13 @@ impl AppState {
         }
     }
 
+    fn logs_visible_lines_estimate(&self) -> usize {
+        crossterm::terminal::size()
+            .map(|(_, rows)| rows.saturating_sub(7) as usize)
+            .unwrap_or(10)
+            .max(1)
+    }
+
     pub fn handle_event(&mut self, ev: AppEvent) {
         match ev {
             AppEvent::Key(k) => self.handle_key(k),
@@ -1533,7 +1614,13 @@ impl AppState {
                 self.maybe_auto_refresh_sites();
                 self.maybe_auto_refresh_certs();
             }
-            AppEvent::Resize => {}
+            AppEvent::Resize => {
+                let visible_lines = self.logs_visible_lines_estimate();
+                self.logs.clamp_scroll(visible_lines);
+                if !self.logs.paused {
+                    self.logs.follow_tail(visible_lines);
+                }
+            }
             AppEvent::QuitRequested => self.should_quit = true,
             AppEvent::DashboardSnapshot(s) => {
                 self.dashboard.snapshot = Some(*s);
@@ -1754,7 +1841,11 @@ impl AppState {
                 }
             }
             AppEvent::LogTailLine { line } => {
+                let follow_tail = self.logs.is_following_tail(0);
                 self.logs.push_line(line);
+                if follow_tail && !self.logs.paused {
+                    self.logs.follow_tail(0);
+                }
                 // 如果有搜索，重新计算匹配
                 let query = self.logs.search_query.clone();
                 if let Some(q) = query {
@@ -3562,6 +3653,8 @@ impl AppState {
     /// 处理日志视图按键
     fn handle_logs_key(&mut self, k: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
+        let visible_lines = self.logs_visible_lines_estimate();
+        let page_step = visible_lines.saturating_sub(LOGS_PAGE_SCROLL_FACTOR).max(1) as isize;
 
         // 搜索模式优先
         if self.logs.focused == LogsFocus::SearchInput {
@@ -3576,6 +3669,7 @@ impl AppState {
                     let query = self.logs.search_query.clone();
                     if let Some(q) = query {
                         self.logs.search(&q);
+                        self.logs.reveal_current_match(visible_lines);
                     }
                     self.logs.focused = LogsFocus::LogContent;
                     return;
@@ -3611,7 +3705,11 @@ impl AppState {
 
         // Space: 暂停/继续
         if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char(' ')) {
-            self.logs.toggle_pause();
+            if self.logs.paused {
+                self.logs.follow_tail(visible_lines);
+            } else {
+                self.logs.toggle_pause();
+            }
             return;
         }
 
@@ -3636,10 +3734,12 @@ impl AppState {
         if self.logs.search_query.is_some() && !self.logs.match_lines.is_empty() {
             if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('n')) {
                 self.logs.next_match();
+                self.logs.reveal_current_match(visible_lines);
                 return;
             }
             if k.modifiers.contains(KeyModifiers::SHIFT) && matches!(k.code, KeyCode::Char('N')) {
                 self.logs.prev_match();
+                self.logs.reveal_current_match(visible_lines);
                 return;
             }
         }
@@ -3728,7 +3828,36 @@ impl AppState {
                     }
                     _ => {}
                 },
-                _ => {}
+                LogsFocus::LogContent => match k.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.logs.scroll_vertical(-1, visible_lines);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.logs.scroll_vertical(1, visible_lines);
+                    }
+                    KeyCode::PageUp => {
+                        self.logs.scroll_vertical(-page_step, visible_lines);
+                    }
+                    KeyCode::PageDown => {
+                        self.logs.scroll_vertical(page_step, visible_lines);
+                    }
+                    KeyCode::Home => {
+                        self.logs.vertical_scroll = 0;
+                        self.logs.paused = true;
+                    }
+                    KeyCode::End => {
+                        self.logs.follow_tail(visible_lines);
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        self.logs.scroll_horizontal(-LOGS_HORIZONTAL_SCROLL_STEP);
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        self.logs
+                            .scroll_horizontal(LOGS_HORIZONTAL_SCROLL_STEP);
+                    }
+                    _ => {}
+                },
+                LogsFocus::SearchInput => {}
             }
         }
     }
@@ -4356,5 +4485,55 @@ server {
         assert_eq!(s.slot_edit_lines, vec!["abc".to_string()]);
         assert!(s.slot_redo());
         assert_eq!(s.slot_edit_lines, vec!["abcd".to_string()]);
+    }
+
+    #[test]
+    fn logs_scroll_vertical_clamps_and_updates_pause() {
+        let mut logs = LogsState::default();
+        logs.buffer = (0..20).map(|i| format!("line-{i}")).collect();
+
+        logs.follow_tail(5);
+        assert_eq!(logs.vertical_scroll, 15);
+        assert!(!logs.paused);
+
+        logs.scroll_vertical(-3, 5);
+        assert_eq!(logs.vertical_scroll, 12);
+        assert!(logs.paused);
+
+        logs.scroll_vertical(999, 5);
+        assert_eq!(logs.vertical_scroll, 15);
+        assert!(!logs.paused);
+    }
+
+    #[test]
+    fn logs_reveal_current_match_moves_into_view() {
+        let mut logs = LogsState::default();
+        logs.buffer = (0..30).map(|i| format!("line-{i}")).collect();
+        logs.search("line-18");
+        logs.vertical_scroll = 0;
+
+        logs.reveal_current_match(5);
+
+        assert_eq!(logs.vertical_scroll, 14);
+        assert!(logs.paused);
+    }
+
+    #[test]
+    fn logs_push_line_shifts_scroll_and_matches_when_buffer_rolls() {
+        let mut logs = LogsState {
+            max_lines: 3,
+            vertical_scroll: 1,
+            match_lines: vec![1, 2],
+            ..Default::default()
+        };
+        logs.buffer.push_back("a".into());
+        logs.buffer.push_back("b".into());
+        logs.buffer.push_back("c".into());
+
+        logs.push_line("d".into());
+
+        assert_eq!(logs.buffer.len(), 3);
+        assert_eq!(logs.vertical_scroll, 0);
+        assert_eq!(logs.match_lines, vec![0, 1]);
     }
 }

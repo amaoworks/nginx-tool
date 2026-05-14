@@ -133,7 +133,7 @@ fn render_content(frame: &mut Frame, area: Rect, state: &AppState) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if inner.height < 2 {
+    if inner.height < 1 {
         return;
     }
 
@@ -172,28 +172,13 @@ fn render_content(frame: &mut Frame, area: Rect, state: &AppState) {
         return;
     }
 
-    // 显示日志行
-    let visible_lines = inner.height as usize;
-    let total_lines = logs.buffer.len();
-
-    // 计算滚动位置
-    // 如果未暂停，自动滚动到最新（底部）
-    // 如果暂停，保持当前位置（这里简化为始终显示底部）
-    let scroll_offset = total_lines.saturating_sub(visible_lines);
-
-    let display_lines: Vec<&String> = logs
-        .buffer
-        .iter()
-        .skip(scroll_offset)
-        .take(visible_lines)
-        .collect();
-
     // 渲染日志行，搜索匹配时高亮
-    let lines: Vec<Line> = display_lines
+    let lines: Vec<Line> = logs
+        .buffer
         .iter()
         .enumerate()
         .map(|(i, line)| {
-            let line_idx = scroll_offset + i;
+            let line_idx = i;
             // 检查是否为匹配行
             let is_match = logs.match_lines.contains(&line_idx);
             let is_current_match = logs
@@ -226,7 +211,7 @@ fn render_content(frame: &mut Frame, area: Rect, state: &AppState) {
         })
         .collect();
 
-    let p = Paragraph::new(lines);
+    let p = Paragraph::new(lines).scroll((logs.vertical_scroll as u16, logs.horizontal_scroll));
     frame.render_widget(p, inner);
 }
 
@@ -278,9 +263,18 @@ fn render_status(frame: &mut Frame, area: Rect, state: &AppState) {
         if logs.paused {
             parts.push("已暂停".to_string());
         }
+        parts.push(format!(
+            "行 {}/{}",
+            logs.vertical_scroll.saturating_add(1),
+            logs.buffer.len()
+        ));
+        if logs.horizontal_scroll > 0 {
+            parts.push(format!("列 {}", logs.horizontal_scroll.saturating_add(1)));
+        }
         if !logs.match_lines.is_empty() {
             let total = logs.match_lines.len();
-            parts.push(format!("{} 处匹配", total));
+            let current = logs.match_index.map(|idx| idx + 1).unwrap_or(0);
+            parts.push(format!("匹配 {}/{}", current, total));
         }
     }
 
