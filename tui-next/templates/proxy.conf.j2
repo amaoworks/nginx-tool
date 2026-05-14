@@ -4,8 +4,8 @@ server {
     # nginx-tools:managed type=proxy
     # nginx-tools:features={% if feature_streaming == "true" %}streaming,{% endif %}{% if feature_websocket == "true" %}websocket,{% endif %}{% if feature_large_body == "true" %}large_body,{% endif %}{% if feature_cors == "true" %}cors,{% endif %}{% if feature_long_timeout == "true" %}long_timeout,{% endif %}
 
-    access_log /var/log/nginx/access.log;
-    error_log /var/log/nginx/error.log;
+    access_log /var/log/nginx/{{ site_name }}.access.log;
+    error_log /var/log/nginx/{{ site_name }}.error.log;
 {% if feature_large_body == "true" %}
     client_max_body_size 50m;
 {% endif %}

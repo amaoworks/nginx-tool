@@ -103,6 +103,7 @@ pub fn render(kind: SiteKind, params: &RenderParams) -> Result<String, String> {
         .map_err(|e| format!("模板加载失败：{}", e))?;
 
     let ctx = minijinja::Value::from_iter([
+        ("site_name", params.site_name.clone()),
         ("domain_name", params.domain_name.clone()),
         ("domain_aliases", params.domain_aliases.clone()),
         ("upstream_scheme", params.upstream_scheme.clone()),
@@ -270,6 +271,7 @@ mod tests {
     #[test]
     fn render_static_basic() {
         let params = RenderParams {
+            site_name: "blog".into(),
             domain_name: "blog.example.com".into(),
             static_root: "/var/www/blog".into(),
             ..Default::default()
@@ -278,8 +280,8 @@ mod tests {
         assert!(out.contains("server_name blog.example.com;"));
         assert!(out.contains("root /var/www/blog;"));
         assert!(out.contains("try_files $uri $uri/ =404;"));
-        assert!(out.contains("access_log /var/log/nginx/access.log;"));
-        assert!(out.contains("error_log /var/log/nginx/error.log;"));
+        assert!(out.contains("access_log /var/log/nginx/blog.access.log;"));
+        assert!(out.contains("error_log /var/log/nginx/blog.error.log;"));
         assert!(out.contains("location ~* \\.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2)$ {"));
         assert!(out.contains("expires 30d;"));
     }
@@ -287,6 +289,7 @@ mod tests {
     #[test]
     fn render_static_with_aliases() {
         let params = RenderParams {
+            site_name: "example".into(),
             domain_name: "example.com".into(),
             domain_aliases: "www.example.com m.example.com".into(),
             static_root: "/var/www/example".into(),
@@ -299,6 +302,7 @@ mod tests {
     #[test]
     fn render_proxy_without_aliases() {
         let params = RenderParams {
+            site_name: "app".into(),
             domain_name: "app.example.com".into(),
             upstream_scheme: "http".into(),
             upstream_target: "127.0.0.1:8080".into(),
@@ -306,6 +310,8 @@ mod tests {
         };
         let out = render(SiteKind::Proxy, &params).unwrap();
         assert!(out.contains("server_name app.example.com;"));
+        assert!(out.contains("access_log /var/log/nginx/app.access.log;"));
+        assert!(out.contains("error_log /var/log/nginx/app.error.log;"));
         assert!(!out.contains("server_name app.example.com ;"));
     }
 

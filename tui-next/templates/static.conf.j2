@@ -6,8 +6,8 @@ server {
     root {{ static_root }};
     index index.html index.htm;
 
-    access_log /var/log/nginx/access.log;
-    error_log /var/log/nginx/error.log;
+    access_log /var/log/nginx/{{ site_name }}.access.log;
+    error_log /var/log/nginx/{{ site_name }}.error.log;
 
     # nginx-tools:custom-before-location:start
     {{ custom_before_location | safe }}

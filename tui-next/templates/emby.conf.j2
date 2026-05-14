@@ -3,6 +3,9 @@ server {
     server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
 
     # nginx-tools:tool-marker: type=emby
+    access_log /var/log/nginx/{{ site_name }}.access.log;
+    error_log /var/log/nginx/{{ site_name }}.error.log;
+
     # nginx-tools:custom-before-location:start
     {{ custom_before_location | safe }}
     # nginx-tools:custom-before-location:end
