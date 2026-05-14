@@ -97,6 +97,10 @@ sudo bash ~/nginx/install.sh uninstall
 - 申请证书前，域名需先解析到服务器，且 80 端口可访问
 - TUI 预编译二进制目前仅提供 Linux `amd64 / arm64`
 
+## 致谢
+- ❤️ 感谢 [**Linux.do**](https://linux.do) 社区提供的交流与分享平台
+- 🙏 特别感谢 **@sixsixsix** 的 Shell 脚本思路启发，原帖：[https://linux.do/t/topic/1486160](https://linux.do/t/topic/1486160)
+
 ## License
 
 [MIT](LICENSE)

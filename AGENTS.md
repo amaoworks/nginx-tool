@@ -30,7 +30,7 @@ Nginx-Tools/
 ├── tui-next/
 │   ├── Cargo.toml          # Rust 项目配置
 │   ├── build.rs            # 构建脚本（注入版本号）
-│   ├── CHANGELOG.md        # TUI 设计变更记录
+│   ├── CHANGELOG.md        # TUI 变更记录
 │   ├── src/                # Rust 源码
 │   │   ├── main.rs         # 入口
 │   │   ├── app/            # 应用层（状态管理）
@@ -38,8 +38,13 @@ Nginx-Tools/
 │   │   ├── domain/         # 领域层（站点/证书等模型）
 │   │   ├── infra/          # 基础设施层（系统命令、文件操作）
 │   │   ├── config/         # 配置管理
-│   │   ├── template/       # 模板渲染
+│   │   ├── template/       # 模板解析与渲染
+│   │   ├── error.rs        # 统一错误类型
 │   │   └── version.rs      # 版本号逻辑
+│   ├── templates/          # TUI 内置 Jinja 模板
+│   │   ├── proxy.conf.j2
+│   │   ├── emby.conf.j2
+│   │   └── static.conf.j2
 │   ├── tests/
 │   │   └── smoke.rs        # 冒烟测试（CJK 宽字符、基础布局）
 │   └── doc/                # 设计文档（修改需许可）
@@ -51,7 +56,6 @@ Nginx-Tools/
 │   └── workflows/
 │       └── release.yml     # CI 构建流程
 ├── AGENTS.md
-├── CHANGELOG.md
 ├── LICENSE                 # MIT
 └── README.md
 ```
@@ -104,6 +108,7 @@ shellcheck shell/*.sh install.sh
 - 使用 `anyhow::Result` 统一错误返回，`thiserror` 定义领域错误
 - UI 组件使用 `ratatui` widget 模式，保持 render 函数纯化
 - 状态机模式管理页面导航（见 `architecture.md`）
+- 模板相关逻辑位于 `src/template/`，内置模板文件位于 `tui-next/templates/`
 - 日志使用 `tracing`（输出到 `~/.local/ngtool/logs/tui.log` + 审计日志）
 
 ## 发布流程
