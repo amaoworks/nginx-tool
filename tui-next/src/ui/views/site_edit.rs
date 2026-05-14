@@ -20,6 +20,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
+        "模式切换：F5 高级模式  F6 原始模式",
+        Style::default().fg(theme::FG_DIM),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
         format!("类型: {}", edit.site_type.label()),
         Style::default().fg(theme::FG_NORMAL),
     )));

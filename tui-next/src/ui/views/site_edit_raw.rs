@@ -24,6 +24,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // 文件路径提示
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
+        "模式切换：F5 托管模式",
+        Style::default().fg(theme::FG_DIM),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
         format!("文件: {}", config_path),
         Style::default().fg(theme::FG_DIM),
     )));

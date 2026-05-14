@@ -2695,6 +2695,11 @@ impl AppState {
             return;
         }
 
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(2)) {
+            self.submit_site_form();
+            return;
+        }
+
         // Space: 复选框切换
         if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char(' ')) {
             match (self.site_form.focused, self.site_form.enable_now) {
@@ -2885,6 +2890,34 @@ impl AppState {
 
         if k.modifiers == KeyModifiers::NONE {
             match k.code {
+                KeyCode::F(2) => {
+                    self.save_site_edit(false);
+                    return;
+                }
+                KeyCode::F(3) => {
+                    self.save_site_edit(true);
+                    return;
+                }
+                KeyCode::F(4) => {
+                    if self.site_edit.restore_original() {
+                        self.notification =
+                            Some(Notification::success("已重置为加载时的值".to_string()));
+                    } else {
+                        self.notification =
+                            Some(Notification::failure("无可恢复的原始值".to_string()));
+                    }
+                    return;
+                }
+                KeyCode::F(5) => {
+                    let name = self.site_edit.site_name.clone();
+                    self.route = Route::Sites(SitesRoute::EditAdvanced { site_name: name });
+                    return;
+                }
+                KeyCode::F(6) => {
+                    let name = self.site_edit.site_name.clone();
+                    self.route = Route::Sites(SitesRoute::EditRaw { site_name: name });
+                    return;
+                }
                 KeyCode::Up => {
                     self.site_edit.move_focus_backward();
                     return;
@@ -2903,41 +2936,6 @@ impl AppState {
                 }
                 _ => {}
             }
-        }
-
-        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('a')) {
-            let name = self.site_edit.site_name.clone();
-            self.route = Route::Sites(SitesRoute::EditAdvanced { site_name: name });
-            return;
-        }
-
-        // o: 切换到原始配置模式
-        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('o')) {
-            let name = self.site_edit.site_name.clone();
-            self.route = Route::Sites(SitesRoute::EditRaw { site_name: name });
-            return;
-        }
-
-        // Ctrl+S: 保存并测试
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('s')) {
-            self.save_site_edit(true);
-            return;
-        }
-
-        // Ctrl+W: 仅保存
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('w')) {
-            self.save_site_edit(false);
-            return;
-        }
-
-        // Ctrl+D: 重置表单为加载时的原始值（design.md 子模式 C）
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('d')) {
-            if self.site_edit.restore_original() {
-                self.notification = Some(Notification::success("已重置为加载时的值".to_string()));
-            } else {
-                self.notification = Some(Notification::failure("无可恢复的原始值".to_string()));
-            }
-            return;
         }
 
         // 文本输入
@@ -3021,27 +3019,41 @@ impl AppState {
             return;
         }
 
-        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('a')) {
-            let name = self.site_edit.site_name.clone();
-            self.route = Route::Sites(SitesRoute::EditManaged { site_name: name });
-            return;
-        }
-
-        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('o')) {
-            let name = self.site_edit.site_name.clone();
-            self.route = Route::Sites(SitesRoute::EditRaw { site_name: name });
-            return;
-        }
-
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('e')) {
-            self.site_edit.enter_slot_full();
-            let slot = self.site_edit.current_slot;
-            let name = self.site_edit.site_name.clone();
-            self.route = Route::Sites(SitesRoute::EditSlotFull {
-                site_name: name,
-                slot,
-            });
-            return;
+        if k.modifiers == KeyModifiers::NONE {
+            match k.code {
+                KeyCode::F(5) => {
+                    let name = self.site_edit.site_name.clone();
+                    self.route = Route::Sites(SitesRoute::EditManaged { site_name: name });
+                    return;
+                }
+                KeyCode::F(6) => {
+                    let name = self.site_edit.site_name.clone();
+                    self.route = Route::Sites(SitesRoute::EditRaw { site_name: name });
+                    return;
+                }
+                KeyCode::F(7) => {
+                    let snippets = crate::template::snippets::get_snippets_for_slot(
+                        self.site_edit.current_slot,
+                    );
+                    if let Some(snippet) = snippets.get(self.site_edit.template_index) {
+                        self.site_edit.replace_with_snippet(snippet.content);
+                        self.notification =
+                            Some(Notification::success("已替换槽位".to_string()));
+                    }
+                    return;
+                }
+                KeyCode::F(8) => {
+                    self.site_edit.enter_slot_full();
+                    let slot = self.site_edit.current_slot;
+                    let name = self.site_edit.site_name.clone();
+                    self.route = Route::Sites(SitesRoute::EditSlotFull {
+                        site_name: name,
+                        slot,
+                    });
+                    return;
+                }
+                _ => {}
+            }
         }
 
         if k.modifiers == KeyModifiers::NONE && self.site_edit.focused == EditFocus::Domain {
@@ -3087,18 +3099,6 @@ impl AppState {
             }
         }
 
-        if k.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(k.code, KeyCode::Char('r'))
-        {
-            let snippets =
-                crate::template::snippets::get_snippets_for_slot(self.site_edit.current_slot);
-            if let Some(snippet) = snippets.get(self.site_edit.template_index) {
-                self.site_edit.replace_with_snippet(snippet.content);
-                self.notification = Some(Notification::success("已替换槽位".to_string()));
-            }
-            return;
-        }
-
         self.handle_site_edit_managed_key(k);
     }
 
@@ -3120,8 +3120,8 @@ impl AppState {
             return;
         }
 
-        // o: 切换到表单模式
-        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::Char('o')) {
+        // F5: 切换到表单模式
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(5)) {
             // 检查标记是否完整
             let content = self.site_edit.raw_lines.join("\n");
             let (_, markers_intact) =
@@ -3144,28 +3144,24 @@ impl AppState {
             return;
         }
 
-        // Ctrl+S: 保存并测试
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('s')) {
-            self.save_raw_edit(true);
-            return;
-        }
-
-        // Ctrl+W: 仅保存
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('w')) {
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(2)) {
             self.save_raw_edit(false);
             return;
         }
 
-        // Ctrl+Z: 撤销（design.md 子模式 D）
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('z')) {
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(3)) {
+            self.save_raw_edit(true);
+            return;
+        }
+
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(9)) {
             if !self.site_edit.raw_undo() {
                 self.notification = Some(Notification::info("无可撤销的操作".to_string()));
             }
             return;
         }
 
-        // Ctrl+Y: 重做
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('y')) {
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(10)) {
             if !self.site_edit.raw_redo() {
                 self.notification = Some(Notification::info("无可重做的操作".to_string()));
             }
@@ -3310,8 +3306,8 @@ impl AppState {
     fn handle_slot_full_edit_key(&mut self, k: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
-        // Ctrl+S: 完成编辑，写回 injection_slots，回到表单模式
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('s')) {
+        // F2: 完成编辑，写回 injection_slots，回到表单模式
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(2)) {
             if self.site_edit.commit_slot_full().is_some() {
                 self.notification = Some(Notification::success("已完成槽位编辑".to_string()));
             }
@@ -3332,8 +3328,8 @@ impl AppState {
             return;
         }
 
-        // Ctrl+D: 清空整个槽位
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('d')) {
+        // F4: 清空整个槽位
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(4)) {
             self.site_edit.push_slot_undo();
             self.site_edit.slot_edit_lines = vec![String::new()];
             self.site_edit.slot_edit_cursor_line = 0;
@@ -3341,16 +3337,16 @@ impl AppState {
             return;
         }
 
-        // Ctrl+Z: 撤销
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('z')) {
+        // F9: 撤销
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(9)) {
             if !self.site_edit.slot_undo() {
                 self.notification = Some(Notification::info("无可撤销的操作".to_string()));
             }
             return;
         }
 
-        // Ctrl+Y: 重做
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('y')) {
+        // F10: 重做
+        if k.modifiers == KeyModifiers::NONE && matches!(k.code, KeyCode::F(10)) {
             if !self.site_edit.slot_redo() {
                 self.notification = Some(Notification::info("无可重做的操作".to_string()));
             }

@@ -50,13 +50,8 @@ fn render_status_line(frame: &mut Frame, area: Rect, state: &AppState) {
             Style::default().fg(theme::FG_DIM),
         ));
     } else {
-        spans.push(Span::styled("[r] 刷新", Style::default().fg(theme::FG_DIM)));
+        spans.push(Span::styled("等待首次刷新…", Style::default().fg(theme::FG_DIM)));
     }
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(
-        "[Tab] 切换区域  [Enter] 执行  [c] 清空输出  [Esc] 返回侧栏",
-        Style::default().fg(theme::FG_DIM),
-    ));
     if let Some(err) = &state.certs.last_error {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
@@ -324,7 +319,7 @@ fn render_auto_renew(frame: &mut Frame, area: Rect, state: &AppState) {
         }
         None => {
             lines.push(Line::from(Span::styled(
-                "（尚未检查；按 [检查自动续签] 或 [r] 触发刷新）",
+                "（尚未检查）",
                 Style::default().fg(theme::FG_DIM),
             )));
         }
@@ -336,10 +331,7 @@ fn render_output(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(theme::BORDER))
-        .title(Span::styled(
-            " 操作输出（[c] 清空） ",
-            Style::default().fg(theme::FG_PATH),
-        ));
+        .title(Span::styled(" 操作输出 ", Style::default().fg(theme::FG_PATH)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

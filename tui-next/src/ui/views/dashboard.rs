@@ -39,13 +39,13 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         lines.push(Line::from(""));
         let elapsed = t.elapsed().as_secs();
         lines.push(Line::from(Span::styled(
-            format!("最近一次刷新：{}s 前　[r] 手动刷新", elapsed),
+            format!("最近一次刷新：{}s 前", elapsed),
             Style::default().fg(theme::FG_DIM),
         )));
     } else {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "[r] 手动刷新（30 秒自动刷新）",
+            "30 秒自动刷新",
             Style::default().fg(theme::FG_DIM),
         )));
     }

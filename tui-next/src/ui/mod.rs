@@ -13,7 +13,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::route::{MenuItem, Route, SitesRoute};
-use crate::app::state::{AppState, FocusArea};
+use crate::app::state::{AppState, CertsFocus, EditFocus, FocusArea, FormField, LogsFocus};
 
 pub const MIN_COLS: u16 = 80;
 pub const MIN_ROWS: u16 = 24;
@@ -183,6 +183,10 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn footer_hints(state: &AppState) -> String {
+    if state.focus == FocusArea::Sidebar {
+        return " 菜单 | [↑↓] 选择 [Enter] 进入 [1-6] 直达 | [q] 退出".to_string();
+    }
+
     let route_label = match &state.route {
         Route::Dashboard => "仪表盘",
         Route::Sites(SitesRoute::List) => "站点列表",
@@ -197,92 +201,161 @@ fn footer_hints(state: &AppState) -> String {
         Route::Backup => "备份还原",
     };
 
-    let mut tips: Vec<&'static str> = Vec::new();
-    match &state.route {
-        Route::Dashboard => {
-            tips.push("[r] 刷新");
-            tips.push("[Esc] 返回侧栏");
-        }
-        Route::Sites(SitesRoute::List) => {
-            tips.push("[n] 新建");
-            tips.push("[Enter] 编辑");
-            tips.push("[s] 启用/停用");
-            tips.push("[d] 删除");
-            tips.push("[c] 证书");
-            tips.push("[l] 日志");
-            tips.push("[Esc] 返回侧栏");
-        }
-        Route::Sites(SitesRoute::New) => {
-            tips.push("[Tab] 切区域");
-            tips.push("[↑↓←→] 移动");
-            tips.push("[Space] 开关");
-            tips.push("[Enter] 确认/提交");
-            tips.push("[Esc] 返回");
-        }
-        Route::Sites(SitesRoute::EditManaged { .. }) => {
-            tips.push("[Ctrl+S] 保存测试");
-            tips.push("[Ctrl+W] 仅保存");
-            tips.push("[Ctrl+D] 重置");
-            tips.push("[a] 高级");
-            tips.push("[o] 原始");
-            tips.push("[Esc] 返回");
-        }
-        Route::Sites(SitesRoute::EditAdvanced { .. }) => {
-            tips.push("[←→] 切槽位");
-            tips.push("[↑↓] 选模板");
-            tips.push("[Enter/Space] 追加");
-            tips.push("[Ctrl+R] 替换");
-            tips.push("[Ctrl+E] 全屏槽");
-            tips.push("[a] 托管");
-            tips.push("[o] 原始");
-            tips.push("[Esc] 返回");
-        }
-        Route::Sites(SitesRoute::EditRaw { .. }) => {
-            tips.push("[Ctrl+S] 保存测试");
-            tips.push("[Ctrl+W] 仅保存");
-            tips.push("[Ctrl+Z/Y] 撤销/重做");
-            tips.push("[o] 托管");
-            tips.push("[Esc] 返回");
-        }
-        Route::Sites(SitesRoute::EditSlotFull { .. }) => {
-            tips.push("[Ctrl+S] 完成");
-            tips.push("[Ctrl+D] 清空");
-            tips.push("[Ctrl+Z/Y] 撤销/重做");
-            tips.push("[Esc] 取消");
-        }
-        Route::Certs => {
-            tips.push("[Tab] 切换区域");
-            tips.push("[Enter] 执行");
-            tips.push("[r] 续签");
-            tips.push("[Esc] 返回侧栏");
-        }
-        Route::Logs => {
-            tips.push("[Tab] 切换区域");
-            tips.push("[Space] 暂停");
-            tips.push("[c] 清屏");
-            tips.push("[/] 搜索");
-            tips.push("[Esc] 返回侧栏");
-        }
-        Route::Service => {
-            tips.push("[Tab] 切换按钮");
-            tips.push("[Enter] 执行");
-            tips.push("[c] 清屏");
-            tips.push("[Esc] 返回侧栏");
-        }
-        Route::Backup => {
-            tips.push("[n] 新建");
-            tips.push("[r] 还原");
-            tips.push("[d] 删除");
-            tips.push("[R] 刷新");
-            tips.push("[c] 清空输出");
-            tips.push("[Esc] 返回侧栏");
-        }
-    }
+    let tips: Vec<&'static str> = match &state.route {
+        Route::Dashboard => vec!["[r] 刷新", "[Tab] 切区域", "[Esc] 返回侧栏"],
+        Route::Sites(SitesRoute::List) => vec![
+            "[↑↓] 选择",
+            "[Enter] 编辑",
+            "[n] 新建",
+            "[d] 删除",
+        ],
+        Route::Sites(SitesRoute::New) => footer_hints_for_site_form(state),
+        Route::Sites(SitesRoute::EditManaged { .. }) => footer_hints_for_site_edit(state),
+        Route::Sites(SitesRoute::EditAdvanced { .. }) => footer_hints_for_site_advanced(state),
+        Route::Sites(SitesRoute::EditRaw { .. }) => footer_hints_for_site_raw(),
+        Route::Sites(SitesRoute::EditSlotFull { .. }) => footer_hints_for_slot_full(),
+        Route::Certs => footer_hints_for_certs(state),
+        Route::Logs => footer_hints_for_logs(state),
+        Route::Service => vec![
+            "[←→] 选按钮",
+            "[Enter] 执行",
+            "[c] 清空",
+            "[Esc] 返回侧栏",
+        ],
+        Route::Backup => vec![
+            "[↑↓] 选择",
+            "[n] 新建",
+            "[r] 还原",
+            "[d] 删除",
+            "[R] 刷新",
+        ],
+    };
 
     let mut s = format!(" {} | ", route_label);
     s.push_str(&tips.join(" "));
     s.push_str(" | [q] 退出");
     s
+}
+
+fn footer_hints_for_site_form(state: &AppState) -> Vec<&'static str> {
+    match state.site_form.focused {
+        FormField::SiteName | FormField::Domain | FormField::DomainAliases | FormField::Target => {
+            vec![
+                "[Tab] 下一项",
+                "[Shift+Tab] 上一项",
+                "[Esc] 返回",
+            ]
+        }
+        FormField::SiteType => vec![
+            "[↑↓←→] 选择",
+            "[Tab] 切区域",
+            "[Esc] 返回",
+        ],
+        FormField::EnableCheckbox | FormField::CertCheckbox => vec![
+            "[Space] 切换",
+            "[Tab] 切区域",
+            "[Esc] 返回",
+        ],
+        FormField::SubmitButton => vec!["[Enter] 创建", "[F2] 创建", "[Esc] 返回"],
+        _ => vec![
+            "[←→] 切换",
+            "[Space] 开关",
+            "[Esc] 返回",
+        ],
+    }
+}
+
+fn footer_hints_for_site_edit(state: &AppState) -> Vec<&'static str> {
+    match state.site_edit.focused {
+        EditFocus::Domain | EditFocus::DomainAliases | EditFocus::Target => vec![
+            "[Tab] 下一项",
+            "[Shift+Tab] 上一项",
+            "[F2] 保存",
+            "[F5/F6] 高级/原始",
+            "[Esc] 返回",
+        ],
+        EditFocus::Scheme | EditFocus::StaticMode => vec![
+            "[←→] 切换",
+            "[Enter] 确认",
+            "[F2] 保存",
+            "[F5/F6] 高级/原始",
+            "[Esc] 返回",
+        ],
+        _ => vec![
+            "[Space] 开关",
+            "[Tab] 下一项",
+            "[F2] 保存",
+            "[F5/F6] 高级/原始",
+            "[Esc] 返回",
+        ],
+    }
+}
+
+fn footer_hints_for_site_advanced(state: &AppState) -> Vec<&'static str> {
+    let _ = state;
+    vec![
+        "[←→] 切槽位",
+        "[↑↓] 选模板",
+        "[Enter] 追加",
+        "[F7/F8] 替换/全屏",
+        "[F5/F6] 托管/原始",
+        "[Esc] 返回",
+    ]
+}
+
+fn footer_hints_for_site_raw() -> Vec<&'static str> {
+    vec![
+        "[F2] 保存",
+        "[F3] 保存测试",
+        "[F5] 托管",
+        "[F9/F10] 撤销/重做",
+        "[Esc] 返回",
+    ]
+}
+
+fn footer_hints_for_slot_full() -> Vec<&'static str> {
+    vec!["[F2] 完成", "[F4] 清空", "[F9/F10] 撤销/重做", "[Esc] 取消"]
+}
+
+fn footer_hints_for_certs(state: &AppState) -> Vec<&'static str> {
+    match state.certs.focused {
+        CertsFocus::Table => vec![
+            "[↑↓] 选择",
+            "[Tab] 切区域",
+            "[r] 刷新",
+            "[Esc] 返回侧栏",
+        ],
+        CertsFocus::SiteSelector => vec![
+            "[↑↓] 选站点",
+            "[Tab] 切区域",
+            "[Enter] 到操作",
+            "[Esc] 返回侧栏",
+        ],
+        CertsFocus::ActionButtons => vec![
+            "[←→] 选按钮",
+            "[Enter] 执行",
+            "[c] 清空输出",
+            "[Esc] 返回侧栏",
+        ],
+    }
+}
+
+fn footer_hints_for_logs(state: &AppState) -> Vec<&'static str> {
+    match state.logs.focused {
+        LogsFocus::SearchInput => vec!["[Enter] 搜索", "[Esc] 取消", "[Tab] 切区域"],
+        LogsFocus::SiteSelector | LogsFocus::KindSelector => vec![
+            "[←→] 切换",
+            "[Tab] 切区域",
+            "[/] 搜索",
+            "[Esc] 返回侧栏",
+        ],
+        LogsFocus::LogContent => vec![
+            "[Space] 暂停",
+            "[c] 清屏",
+            "[/] 搜索",
+            "[Esc] 返回侧栏",
+        ],
+    }
 }
 
 fn draw_notification(frame: &mut Frame, content: Rect, n: &crate::app::state::Notification) {

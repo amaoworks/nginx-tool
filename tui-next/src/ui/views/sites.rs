@@ -61,7 +61,7 @@ pub fn render_list(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 
     render_detail(frame, detail_area, state);
-    render_hint(frame, hint_area, state);
+    render_meta(frame, hint_area, state);
 }
 
 fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -215,22 +215,15 @@ fn ssl_compact(ssl: &SslStatus) -> String {
     }
 }
 
-fn render_hint(frame: &mut Frame, area: Rect, state: &AppState) {
+fn render_meta(frame: &mut Frame, area: Rect, state: &AppState) {
     let mut tips = Vec::new();
     if state.run_mode.is_readonly() {
         tips.push(Span::styled(
-            "[只读模式] 启停操作不可用",
+            "[只读模式] 写操作不可用",
             Style::default().fg(theme::FG_WARN),
         ));
-    } else {
-        tips.push(Span::styled(
-            "[Enter] 启用/停用",
-            Style::default().fg(theme::FG_HINT),
-        ));
+        tips.push(Span::raw("  "));
     }
-    tips.push(Span::raw("  "));
-    tips.push(Span::styled("[r] 刷新", Style::default().fg(theme::FG_DIM)));
-    tips.push(Span::raw("  "));
     if let Some(t) = state.sites.last_refresh {
         tips.push(Span::styled(
             format!("最近刷新 {}s 前", t.elapsed().as_secs()),

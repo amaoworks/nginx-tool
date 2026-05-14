@@ -10,8 +10,8 @@ use crate::app::state::{AppState, LogsFocus};
 use crate::domain::log::LogSource;
 use crate::ui::theme;
 
-/// 状态栏预留高度
-const STATUS_BAR_HEIGHT: u16 = 2;
+/// 页面内部仅保留状态信息，动作提示统一交给全局 footer。
+const STATUS_BAR_HEIGHT: u16 = 1;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // 顶部标题栏
@@ -43,7 +43,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     };
     render_content(frame, content_area, state);
 
-    // 状态栏
+    // 状态信息栏
     let status_area = Rect {
         y: area.y + area.height.saturating_sub(STATUS_BAR_HEIGHT),
         height: STATUS_BAR_HEIGHT,
@@ -270,32 +270,21 @@ fn highlight_line(line: &str, query: &str, is_current: bool) -> Line<'static> {
 fn render_status(frame: &mut Frame, area: Rect, state: &AppState) {
     let logs = &state.logs;
 
-    let mut hints: Vec<String> = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
 
     if logs.focused == LogsFocus::SearchInput {
-        hints.push("输入搜索词".to_string());
-        hints.push("[Enter] 执行".to_string());
-        hints.push("[Esc] 取消".to_string());
+        parts.push("搜索中".to_string());
     } else {
         if logs.paused {
-            hints.push("已暂停".to_string());
+            parts.push("已暂停".to_string());
         }
-        hints.push("[Space] 暂停/继续".to_string());
-        hints.push("[c] 清屏".to_string());
-        hints.push("[/] 搜索".to_string());
-
         if !logs.match_lines.is_empty() {
             let total = logs.match_lines.len();
-            hints.push(format!("{} 处匹配", total));
-            hints.push("[n] 下一个".to_string());
-            hints.push("[N] 上一个".to_string());
+            parts.push(format!("{} 处匹配", total));
         }
-
-        hints.push("[Tab] 切换区域".to_string());
-        hints.push("[Esc] 返回侧栏".to_string());
     }
 
-    let hint_text = hints.join("  ");
+    let hint_text = parts.join("  ");
     let line = Line::from(Span::styled(
         format!(" {} ", hint_text),
         Style::default().fg(theme::FG_DIM),

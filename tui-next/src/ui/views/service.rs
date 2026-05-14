@@ -130,10 +130,7 @@ fn render_output(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::BORDER))
-        .title(Span::styled(
-            " 操作输出（[c] 清空） ",
-            Style::default().fg(theme::FG_PATH),
-        ));
+        .title(Span::styled(" 操作输出 ", Style::default().fg(theme::FG_PATH)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -141,7 +138,7 @@ fn render_output(frame: &mut Frame, area: Rect, state: &AppState) {
         let p = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
-                "（暂无输出。Tab/方向键切换按钮，Enter 执行，Esc 返回侧栏）",
+                "（暂无输出）",
                 Style::default().fg(theme::FG_DIM),
             )),
         ]);

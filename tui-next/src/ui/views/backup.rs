@@ -49,13 +49,8 @@ fn render_status_line(frame: &mut Frame, area: Rect, state: &AppState) {
     spans.push(Span::raw("  "));
     if state.run_mode.is_readonly() {
         spans.push(Span::styled(
-            "[只读模式] 创建/删除/还原均不可用  [Esc] 返回侧栏",
+            "[只读模式] 创建/删除/还原均不可用",
             Style::default().fg(theme::FG_WARN),
-        ));
-    } else {
-        spans.push(Span::styled(
-            "[n] 新建  [r] 还原  [d] 删除  [R] 刷新  [c] 清空输出  [Esc] 返回侧栏",
-            Style::default().fg(theme::FG_DIM),
         ));
     }
     if let Some(err) = &state.backup.last_error {
@@ -73,7 +68,7 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
         let body = if state.backup.refreshing {
             "扫描中…"
         } else {
-            "尚无备份。按 [n] 创建一个新备份。"
+            "尚无备份。可通过操作条创建一个新备份。"
         };
         let p = Paragraph::new(vec![Line::from(""), Line::from(body)])
             .style(Style::default().fg(theme::FG_DIM));
@@ -174,10 +169,7 @@ fn render_output(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(theme::BORDER))
-        .title(Span::styled(
-            " 操作输出（[c] 清空） ",
-            Style::default().fg(theme::FG_PATH),
-        ));
+        .title(Span::styled(" 操作输出 ", Style::default().fg(theme::FG_PATH)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

@@ -21,6 +21,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
+        "模式切换：F5 托管模式  F6 原始模式",
+        Style::default().fg(theme::FG_DIM),
+    )));
+    lines.push(Line::from(Span::styled(
         "注入槽用于补充托管模板未覆盖的 server/location 配置。",
         Style::default().fg(theme::FG_DIM),
     )));
