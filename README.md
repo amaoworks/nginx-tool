@@ -29,6 +29,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/in
 bash <(curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh) tui
 ```
 
+GitHub 访问较慢时可加 `--proxy` 前缀：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/amaoworks/nginx-tool/main/install.sh) --proxy https://ghfast.top tui
+curl -fsSL <URL> | bash -s -- --proxy https://ghfast.top shell
+```
+
 安装后：
 
 - Shell：使用 `ng`、`ngmon`
