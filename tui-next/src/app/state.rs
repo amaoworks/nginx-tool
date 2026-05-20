@@ -954,6 +954,8 @@ pub struct SiteEditState {
     pub dirty: bool,
     /// 是否正在保存
     pub saving: bool,
+    /// 保存成功后是否退出
+    pub exit_after_save: bool,
     /// 字段错误
     pub field_errors: std::collections::HashMap<String, String>,
     /// 选中模板索引
@@ -1037,6 +1039,7 @@ impl Default for SiteEditState {
             raw_lines: Vec::new(),
             dirty: false,
             saving: false,
+            exit_after_save: false,
             field_errors: std::collections::HashMap::new(),
             template_index: 0,
             pending_save: None,
@@ -1859,9 +1862,14 @@ impl AppState {
                         self.notification =
                             Some(Notification::success(format!("站点 {} 已保存", site_name)));
                         self.site_edit.dirty = false;
+                        if self.site_edit.exit_after_save {
+                            self.site_edit = SiteEditState::default();
+                            self.route = Route::Sites(SitesRoute::List);
+                        }
                     }
                     Err(e) => {
                         self.notification = Some(Notification::failure(format!("保存失败：{}", e)));
+                        self.site_edit.exit_after_save = false;
                     }
                 }
             }
@@ -2442,6 +2450,10 @@ impl AppState {
             ModalAction::DiscardSiteForm => {
                 self.site_form = SiteFormState::default();
                 self.route = Route::Sites(SitesRoute::List);
+            }
+            ModalAction::SaveAndExitSiteEdit => {
+                self.site_edit.exit_after_save = true;
+                self.save_site_edit(false);
             }
             ModalAction::DiscardSiteEdit => {
                 self.site_edit = SiteEditState::default();

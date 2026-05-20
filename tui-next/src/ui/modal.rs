@@ -19,6 +19,8 @@ pub enum ModalAction {
     DiscardSiteForm,
     /// 确认放弃站点编辑器中的修改
     DiscardSiteEdit,
+    /// 保存站点编辑并退出
+    SaveAndExitSiteEdit,
     /// 确认为指定站点申请证书（携带域名列表，避免后续状态漂移）
     RequestCertForSite {
         site_name: String,
@@ -44,7 +46,8 @@ pub enum ModalAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalButton {
-    Confirm,
+    Primary,
+    Secondary,
     Cancel,
 }
 
@@ -54,10 +57,12 @@ pub enum ModalButton {
 pub struct Modal {
     pub title: String,
     pub body: Vec<String>,
-    pub confirm_label: String,
+    pub primary_label: Option<String>,
+    pub secondary_label: Option<String>,
     pub cancel_label: String,
     pub focused: ModalButton,
-    pub action: ModalAction,
+    pub primary_action: Option<ModalAction>,
+    pub secondary_action: Option<ModalAction>,
 }
 
 impl Modal {
@@ -71,10 +76,34 @@ impl Modal {
         Self {
             title: title.into(),
             body,
-            confirm_label: confirm_label.into(),
+            primary_label: Some(confirm_label.into()),
+            secondary_label: None,
             cancel_label: "取消".into(),
-            focused: ModalButton::Cancel, // 默认聚焦取消，防止误操作
-            action,
+            focused: ModalButton::Cancel,
+            primary_action: Some(action),
+            secondary_action: None,
+        }
+    }
+
+    /// 三按钮弹窗：主要操作、次要操作、取消
+    #[allow(dead_code)]
+    pub fn three_button(
+        title: impl Into<String>,
+        body: Vec<String>,
+        primary_label: impl Into<String>,
+        primary_action: ModalAction,
+        secondary_label: impl Into<String>,
+        secondary_action: ModalAction,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            body,
+            primary_label: Some(primary_label.into()),
+            secondary_label: Some(secondary_label.into()),
+            cancel_label: "取消".into(),
+            focused: ModalButton::Cancel,
+            primary_action: Some(primary_action),
+            secondary_action: Some(secondary_action),
         }
     }
 
@@ -112,10 +141,14 @@ impl Modal {
 
     /// 编辑器有未保存修改时，按 Esc 确认是否放弃
     pub fn confirm_discard_site_edit() -> Self {
-        Self::confirm(
-            "⚠️  确认放弃修改",
-            vec!["有尚未保存的修改。".into(), "确认离开编辑页面？".into()],
-            "放弃",
+        Self::three_button(
+            "⚠️  有未保存的修改",
+            vec![
+                "是否保存当前修改？".into(),
+            ],
+            "保存并退出",
+            ModalAction::SaveAndExitSiteEdit,
+            "不保存退出",
             ModalAction::DiscardSiteEdit,
         )
     }
@@ -149,14 +182,22 @@ impl Modal {
 
     pub fn toggle_focus(&mut self) {
         self.focused = match self.focused {
-            ModalButton::Confirm => ModalButton::Cancel,
-            ModalButton::Cancel => ModalButton::Confirm,
+            ModalButton::Primary => {
+                if self.secondary_label.is_some() {
+                    ModalButton::Secondary
+                } else {
+                    ModalButton::Cancel
+                }
+            }
+            ModalButton::Secondary => ModalButton::Cancel,
+            ModalButton::Cancel => ModalButton::Primary,
         };
     }
 
     pub fn confirm_action(&self) -> ModalAction {
         match self.focused {
-            ModalButton::Confirm => self.action.clone(),
+            ModalButton::Primary => self.primary_action.clone().unwrap_or(ModalAction::None),
+            ModalButton::Secondary => self.secondary_action.clone().unwrap_or(ModalAction::None),
             ModalButton::Cancel => ModalAction::None,
         }
     }
@@ -216,9 +257,21 @@ pub fn render(frame: &mut Frame, parent: Rect, modal: &Modal) {
 }
 
 fn button_row(modal: &Modal) -> Paragraph<'_> {
-    let confirm = render_button(&modal.confirm_label, modal.focused == ModalButton::Confirm);
-    let cancel = render_button(&modal.cancel_label, modal.focused == ModalButton::Cancel);
-    let line = Line::from(vec![Span::raw("    "), confirm, Span::raw("    "), cancel]);
+    let mut spans = vec![Span::raw("  ")];
+
+    if let Some(ref label) = modal.primary_label {
+        spans.push(render_button(label, modal.focused == ModalButton::Primary));
+        spans.push(Span::raw("  "));
+    }
+
+    if let Some(ref label) = modal.secondary_label {
+        spans.push(render_button(label, modal.focused == ModalButton::Secondary));
+        spans.push(Span::raw("  "));
+    }
+
+    spans.push(render_button(&modal.cancel_label, modal.focused == ModalButton::Cancel));
+
+    let line = Line::from(spans);
     Paragraph::new(line).alignment(Alignment::Center)
 }
 
