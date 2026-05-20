@@ -4385,6 +4385,36 @@ server {
     }
 
     #[test]
+    fn site_edit_empty_aliases_stays_empty() {
+        // 模拟用户创建站点时没有填写附加域名的配置
+        let parsed = crate::template::config_parser::parse_for_edit(
+            r#"
+server {
+    listen 80;
+    server_name app.example.com;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+"#,
+        );
+
+        // 验证解析结果
+        assert_eq!(parsed.domains.len(), 1);
+        assert_eq!(parsed.domains[0], "app.example.com");
+
+        // 从解析结果创建编辑状态
+        let s = SiteEditState::from_parsed("app", &parsed);
+        assert_eq!(s.domain, "app.example.com");
+        assert_eq!(s.domain_aliases, "", "附加域名应该为空字符串");
+
+        // 验证渲染参数
+        let params = s.build_render_params();
+        assert_eq!(params.domain_name, "app.example.com");
+        assert_eq!(params.domain_aliases, "", "渲染参数中的附加域名也应该为空");
+    }
+
+    #[test]
     fn raw_undo_redo_round_trip() {
         let mut s = SiteEditState::default();
         s.raw_lines = vec!["abc".into()];

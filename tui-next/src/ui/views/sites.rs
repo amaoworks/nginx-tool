@@ -97,10 +97,13 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
             Span::styled("○ 停用", Style::default().fg(theme::FG_DIM))
         };
 
+        // 优化域名显示：主域名 + 附加域名数量提示
         let domains = if s.all_domains.is_empty() {
             "(无 server_name)".to_string()
+        } else if s.all_domains.len() == 1 {
+            s.all_domains[0].clone()
         } else {
-            s.all_domains.join(", ")
+            format!("{} +{}", s.all_domains[0], s.all_domains.len() - 1)
         };
         let domain_target = format!(
             "{} → {}",
@@ -126,10 +129,15 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
             Style::default()
         };
 
+        // 动态计算可用宽度：总宽度 - 固定列宽度 - 边距
+        // 固定列：状态(8) + 名称(16) + 类型(8) + SSL(12) = 44
+        // 预留边距和分隔符约 10，域名→目标列至少保留 50 字符
+        let available_width = area.width.saturating_sub(54).max(50) as usize;
+
         Row::new(vec![
             Cell::from(status_span),
             Cell::from(s.name.clone()),
-            Cell::from(truncate(domain_target, 40)),
+            Cell::from(truncate(domain_target, available_width)),
             Cell::from(type_label.to_string()),
             Cell::from(ssl_span),
         ])
@@ -139,7 +147,7 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
     let widths = [
         Constraint::Length(8),
         Constraint::Length(16),
-        Constraint::Min(20),
+        Constraint::Min(50),
         Constraint::Length(8),
         Constraint::Length(12),
     ];
@@ -192,8 +200,10 @@ fn render_detail(frame: &mut Frame, area: Rect, state: &AppState) {
             "域名={} ",
             if s.all_domains.is_empty() {
                 "(无 server_name)".to_string()
+            } else if s.all_domains.len() == 1 {
+                s.all_domains[0].clone()
             } else {
-                s.all_domains.join(", ")
+                format!("{} +{}", s.all_domains[0], s.all_domains.len() - 1)
             }
         )),
         Span::styled("▏ ", Style::default().fg(theme::FG_DIM)),
