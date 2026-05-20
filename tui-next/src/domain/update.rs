@@ -3,14 +3,19 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::config::settings::ProxyConfig;
 use crate::error::NgToolError;
 use crate::version::APP_VERSION;
 
 const REPO_SLUG: &str = "amaoworks/nginx-tool";
 const RELEASE_API: &str = "https://api.github.com/repos/amaoworks/nginx-tool/releases/latest";
+const DEFAULT_PROXY: &str = "https://ghfast.top";
+const GITHUB_TIMEOUT_MS: u64 = 3000;
+const PROXY_TIMEOUT_MS: u64 = 5000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateInfo {
@@ -49,7 +54,13 @@ pub async fn check_latest_release() -> Result<UpdateInfo, NgToolError> {
 }
 
 pub async fn upgrade_to_latest_release() -> Result<SelfUpdateOutcome, NgToolError> {
-    let release = fetch_latest_release().await?;
+    upgrade_to_latest_release_with_config(&ProxyConfig::default()).await
+}
+
+pub async fn upgrade_to_latest_release_with_config(
+    proxy_config: &ProxyConfig,
+) -> Result<SelfUpdateOutcome, NgToolError> {
+    let release = fetch_latest_release_with_config(proxy_config).await?;
     let info = update_info_from_release(&release);
     let binary_path = env::current_exe().map_err(|e| NgToolError::FileOperationFailed {
         path: PathBuf::from("current_exe"),
@@ -65,9 +76,32 @@ pub async fn upgrade_to_latest_release() -> Result<SelfUpdateOutcome, NgToolErro
     }
 
     let asset = release_asset_for_current_arch(&release)?;
-    let client = http_client()?;
+    let use_proxy = if proxy_config.auto_detect {
+        should_use_proxy().await
+    } else {
+        false
+    };
+
+    let download_url = if use_proxy {
+        apply_proxy(&asset.browser_download_url, &proxy_config.github_proxy)
+    } else {
+        asset.browser_download_url.clone()
+    };
+
+    let timeout = if use_proxy {
+        Duration::from_millis(PROXY_TIMEOUT_MS)
+    } else {
+        Duration::from_millis(GITHUB_TIMEOUT_MS)
+    };
+
+    let client = reqwest::Client::builder()
+        .user_agent(format!("ngtool/{}", APP_VERSION))
+        .timeout(timeout)
+        .build()
+        .map_err(http_error)?;
+
     let bytes = client
-        .get(&asset.browser_download_url)
+        .get(&download_url)
         .send()
         .await
         .map_err(http_error)?
@@ -94,13 +128,38 @@ pub async fn upgrade_to_latest_release() -> Result<SelfUpdateOutcome, NgToolErro
 }
 
 async fn fetch_latest_release() -> Result<LatestRelease, NgToolError> {
+    fetch_latest_release_with_config(&ProxyConfig::default()).await
+}
+
+async fn fetch_latest_release_with_config(
+    proxy_config: &ProxyConfig,
+) -> Result<LatestRelease, NgToolError> {
+    let use_proxy = if proxy_config.auto_detect {
+        should_use_proxy().await
+    } else {
+        false
+    };
+
+    let api_url = if use_proxy {
+        apply_proxy(RELEASE_API, &proxy_config.github_proxy)
+    } else {
+        RELEASE_API.to_string()
+    };
+
+    let timeout = if use_proxy {
+        Duration::from_millis(PROXY_TIMEOUT_MS)
+    } else {
+        Duration::from_millis(GITHUB_TIMEOUT_MS)
+    };
+
     let client = reqwest::Client::builder()
         .user_agent(format!("ngtool/{}", APP_VERSION))
+        .timeout(timeout)
         .build()
         .map_err(http_error)?;
 
     client
-        .get(RELEASE_API)
+        .get(&api_url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -117,6 +176,40 @@ fn http_client() -> Result<reqwest::Client, NgToolError> {
         .user_agent(format!("ngtool/{}", APP_VERSION))
         .build()
         .map_err(http_error)
+}
+
+async fn should_use_proxy() -> bool {
+    let client = match reqwest::Client::builder()
+        .user_agent(format!("ngtool/{}", APP_VERSION))
+        .timeout(Duration::from_millis(GITHUB_TIMEOUT_MS))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return true,
+    };
+
+    let start = std::time::Instant::now();
+    let result = client
+        .head(RELEASE_API)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            let elapsed = start.elapsed();
+            elapsed.as_millis() > 2000
+        }
+        _ => true,
+    }
+}
+
+fn apply_proxy(url: &str, proxy_url: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        format!("{}/{}", proxy_url.trim_end_matches('/'), url)
+    } else {
+        url.to_string()
+    }
 }
 
 fn update_info_from_release(release: &LatestRelease) -> UpdateInfo {
