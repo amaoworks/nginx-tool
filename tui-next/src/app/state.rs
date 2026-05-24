@@ -197,11 +197,9 @@ impl ServiceButton {
 /// 证书页焦点
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CertsFocus {
-    /// 证书表格（↑↓ 选中证书）
+    /// 站点列表（↑↓ 选中站点）
     #[default]
     Table,
-    /// 站点选择器（用于申请证书）
-    SiteSelector,
     /// 操作按钮（申请 / 续期 / 检查自动续签）
     ActionButtons,
 }
@@ -244,10 +242,9 @@ pub struct CertsState {
     pub last_refresh: Option<Instant>,
     pub refreshing: bool,
     pub pending_refresh: bool,
-    pub selected: usize,
     pub last_error: Option<String>,
     pub focused: CertsFocus,
-    /// 站点选择器中指向的站点索引（依赖 SitesState.list）
+    /// 当前选中的站点索引（依赖 SitesState.list）
     pub site_selector_index: usize,
     /// 操作按钮当前焦点
     pub action_focus: CertsAction,
@@ -266,21 +263,6 @@ pub struct CertsState {
 }
 
 impl CertsState {
-    pub fn move_cursor(&mut self, delta: i32) {
-        if self.list.is_empty() {
-            self.selected = 0;
-            return;
-        }
-        let len = self.list.len() as i32;
-        let mut idx = self.selected as i32 + delta;
-        if idx < 0 {
-            idx = len - 1;
-        } else if idx >= len {
-            idx = 0;
-        }
-        self.selected = idx as usize;
-    }
-
     pub fn cycle_action(&mut self, delta: i32) {
         let len = CertsAction::ALL.len() as i32;
         let cur = CertsAction::ALL
@@ -1662,6 +1644,9 @@ impl AppState {
                         if self.sites.selected >= list.len() {
                             self.sites.selected = list.len().saturating_sub(1);
                         }
+                        if self.certs.site_selector_index >= list.len() {
+                            self.certs.site_selector_index = list.len().saturating_sub(1);
+                        }
                         self.sites.list = list;
                     }
                     Err(msg) => {
@@ -1921,9 +1906,6 @@ impl AppState {
                 self.certs.raw_output = snap.raw_output;
                 self.certs.auto_renew = Some(snap.auto_renew);
                 self.certs.last_error = snap.error;
-                if !self.certs.list.is_empty() && self.certs.selected >= self.certs.list.len() {
-                    self.certs.selected = self.certs.list.len() - 1;
-                }
             }
             AppEvent::CertRequestResult { site_name, result } => {
                 self.certs.running = None;
@@ -3929,8 +3911,7 @@ impl AppState {
             }
             KeyCode::Tab => {
                 self.certs.focused = match self.certs.focused {
-                    CertsFocus::Table => CertsFocus::SiteSelector,
-                    CertsFocus::SiteSelector => CertsFocus::ActionButtons,
+                    CertsFocus::Table => CertsFocus::ActionButtons,
                     CertsFocus::ActionButtons => CertsFocus::Table,
                 };
                 return;
@@ -3948,11 +3929,6 @@ impl AppState {
 
         match self.certs.focused {
             CertsFocus::Table => match k.code {
-                KeyCode::Up => self.certs.move_cursor(-1),
-                KeyCode::Down => self.certs.move_cursor(1),
-                _ => {}
-            },
-            CertsFocus::SiteSelector => match k.code {
                 KeyCode::Up => self.certs_site_selector_move(-1),
                 KeyCode::Down => self.certs_site_selector_move(1),
                 KeyCode::Enter => {
@@ -3962,8 +3938,9 @@ impl AppState {
                 _ => {}
             },
             CertsFocus::ActionButtons => match k.code {
-                KeyCode::Left | KeyCode::Up => self.certs.cycle_action(-1),
-                KeyCode::Right | KeyCode::Down => self.certs.cycle_action(1),
+                KeyCode::Left => self.certs.cycle_action(-1),
+                KeyCode::Right => self.certs.cycle_action(1),
+                KeyCode::Up => self.certs.focused = CertsFocus::Table,
                 KeyCode::Enter => self.request_certs_action(),
                 _ => {}
             },

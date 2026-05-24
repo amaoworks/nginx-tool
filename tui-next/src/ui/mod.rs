@@ -323,18 +323,14 @@ fn footer_hints_for_certs(state: &AppState) -> Vec<&'static str> {
     match state.certs.focused {
         CertsFocus::Table => vec![
             "[↑↓] 选择",
+            "[Enter] 到操作",
             "[Tab] 切区域",
             "[r] 刷新",
             "[Esc] 返回侧栏",
         ],
-        CertsFocus::SiteSelector => vec![
-            "[↑↓] 选站点",
-            "[Tab] 切区域",
-            "[Enter] 到操作",
-            "[Esc] 返回侧栏",
-        ],
         CertsFocus::ActionButtons => vec![
             "[←→] 选按钮",
+            "[↑] 回站点",
             "[Enter] 执行",
             "[c] 清空输出",
             "[Esc] 返回侧栏",
