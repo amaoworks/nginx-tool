@@ -1339,6 +1339,28 @@ impl SiteEditState {
         true
     }
 
+    /// 保存成功后把当前编辑态与已落盘内容重新对齐，避免连续保存触发旧 mtime 校验，
+    /// 同时让原始模式内容与 Ctrl+D 快照都更新到最新版本。
+    pub fn mark_saved(&mut self, saved_content: &str, mtime_at_save: Option<std::time::SystemTime>) {
+        self.raw_lines = saved_content.lines().map(String::from).collect();
+        if saved_content.ends_with('\n') {
+            self.raw_lines.push(String::new());
+        }
+        if self.raw_cursor_line >= self.raw_lines.len() {
+            self.raw_cursor_line = self.raw_lines.len().saturating_sub(1);
+        }
+        let current_line_len = self
+            .raw_lines
+            .get(self.raw_cursor_line)
+            .map(|line| line.chars().count())
+            .unwrap_or(0);
+        self.raw_cursor_col = self.raw_cursor_col.min(current_line_len);
+        self.mtime_at_load = mtime_at_save;
+        self.field_errors.clear();
+        self.dirty = false;
+        self.seal_original();
+    }
+
     /// 在原始模式做写操作前调用：把当前 raw_lines / 光标推入 undo 栈，并清空 redo 栈。
     /// 栈深上限 100，超过时丢弃栈底。
     pub fn push_raw_undo(&mut self) {
@@ -1828,6 +1850,9 @@ impl AppState {
                         self.site_form = SiteFormState::default(); // 清空表单
                         self.route = Route::Sites(SitesRoute::List);
                         self.sites.pending_refresh = true;
+                        if cert_requested {
+                            self.certs.pending_refresh = true;
+                        }
                     }
                     Ok(crate::domain::site::CreateSiteOutcome::CertFailed { error }) => {
                         self.notification = Some(Notification::info(format!(
@@ -1855,16 +1880,31 @@ impl AppState {
                     self.logs.search(&q);
                 }
             }
-            AppEvent::SiteEditResult { site_name, result } => {
+            AppEvent::SiteEditResult {
+                site_name,
+                saved_content,
+                result,
+            } => {
                 self.site_edit.saving = false;
                 match *result {
                     Ok(()) => {
                         self.notification =
                             Some(Notification::success(format!("站点 {} 已保存", site_name)));
-                        self.site_edit.dirty = false;
+                        self.sites.pending_refresh = true;
+                        self.certs.pending_refresh = true;
                         if self.site_edit.exit_after_save {
                             self.site_edit = SiteEditState::default();
                             self.route = Route::Sites(SitesRoute::List);
+                        } else {
+                            let mtime = std::fs::metadata(
+                                self.ctx
+                                    .probe
+                                    .sites_available
+                                    .join(format!("{}.conf", site_name)),
+                            )
+                            .ok()
+                            .and_then(|m| m.modified().ok());
+                            self.site_edit.mark_saved(&saved_content, mtime);
                         }
                     }
                     Err(e) => {
@@ -4369,6 +4409,35 @@ mod tests {
     fn restore_original_returns_false_when_not_sealed() {
         let mut s = SiteEditState::default();
         assert!(!s.restore_original());
+    }
+
+    #[test]
+    fn mark_saved_updates_raw_lines_and_original_snapshot() {
+        let mut s = SiteEditState::default();
+        s.domain = "old.example.com".into();
+        s.domain_aliases = "www.old.example.com".into();
+        s.target = "127.0.0.1:8080".into();
+        s.raw_lines = vec!["old".into()];
+        s.raw_cursor_line = 0;
+        s.raw_cursor_col = 99;
+        s.dirty = true;
+
+        s.domain = "new.example.com".into();
+        s.domain_aliases.clear();
+        s.target = "127.0.0.1:9000".into();
+        let saved_at = Some(std::time::SystemTime::now());
+        s.mark_saved("line-1\nline-2\n", saved_at);
+
+        assert_eq!(s.raw_lines, vec!["line-1", "line-2", ""]);
+        assert_eq!(s.raw_cursor_line, 0);
+        assert_eq!(s.raw_cursor_col, "line-1".chars().count());
+        assert_eq!(s.mtime_at_load, saved_at);
+        assert!(!s.dirty);
+
+        s.domain = "mutated.example.com".into();
+        assert!(s.restore_original());
+        assert_eq!(s.domain, "new.example.com");
+        assert_eq!(s.target, "127.0.0.1:9000");
     }
 
     #[test]

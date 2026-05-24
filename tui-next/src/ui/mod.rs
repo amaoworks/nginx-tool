@@ -209,6 +209,7 @@ fn footer_hints(state: &AppState) -> String {
             "[Enter] 编辑",
             "[n] 新建",
             "[d] 删除",
+            "[r] 刷新",
         ],
         Route::Sites(SitesRoute::New) => footer_hints_for_site_form(state),
         Route::Sites(SitesRoute::EditManaged { .. }) => footer_hints_for_site_edit(state),

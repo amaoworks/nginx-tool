@@ -234,6 +234,15 @@ fn render_meta(frame: &mut Frame, area: Rect, state: &AppState) {
         ));
         tips.push(Span::raw("  "));
     }
+    tips.push(Span::styled(
+        if state.sites.refreshing {
+            "[r] 刷新中…"
+        } else {
+            "[r] 刷新"
+        },
+        Style::default().fg(theme::FG_PATH),
+    ));
+    tips.push(Span::raw("  "));
     if let Some(t) = state.sites.last_refresh {
         tips.push(Span::styled(
             format!("最近刷新 {}s 前", t.elapsed().as_secs()),

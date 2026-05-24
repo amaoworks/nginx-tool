@@ -251,10 +251,12 @@ async fn run(terminal: &mut Tui, ctx: Arc<AppContext>) -> anyhow::Result<()> {
             let ctx_clone = ctx.clone();
             let tx_clone = task_tx.clone();
             let name = input.name.clone();
+            let saved_content = input.content.clone();
             tokio::spawn(async move {
                 let result = domain::site::save_site_config(ctx_clone, input).await;
                 let _ = tx_clone.send(AppEvent::SiteEditResult {
                     site_name: name,
+                    saved_content,
                     result: Box::new(result),
                 });
             });

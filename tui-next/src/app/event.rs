@@ -38,6 +38,7 @@ pub enum AppEvent {
     /// 站点编辑保存结果
     SiteEditResult {
         site_name: String,
+        saved_content: String,
         result: Box<Result<(), NgToolError>>,
     },
 
