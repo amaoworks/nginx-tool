@@ -599,6 +599,8 @@ Found the following certs:
             name: "app".into(),
             primary_domain: Some("app.example.com".into()),
             all_domains: vec!["app.example.com".into()],
+            access_log_path: None,
+            error_log_path: None,
             site_type: SiteType::Proxy,
             target: None,
             enabled: true,

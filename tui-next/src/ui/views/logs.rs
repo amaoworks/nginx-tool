@@ -58,7 +58,7 @@ fn render_controls(frame: &mut Frame, area: Rect, state: &AppState) {
 
     // 站点下拉
     let site_label = match &logs.source {
-        LogSource::Global(_) => "全部站点",
+        LogSource::Global { .. } => "全部站点",
         LogSource::Site { name, .. } => name,
     };
     let site_focused = logs.focused == LogsFocus::SiteSelector;

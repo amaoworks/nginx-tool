@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::app::event::AppEvent;
 use crate::app::route::{MenuItem, Route, SitesRoute};
 use crate::domain::dashboard::DashboardSnapshot;
-use crate::domain::log::LogSource;
+use crate::domain::log::{LogKind, LogPaths, LogSource};
 use crate::domain::site::Site;
 use crate::domain::update::UpdateInfo;
 use crate::infra::AppContext;
@@ -845,16 +845,6 @@ impl LogsState {
     /// 切换暂停状态
     pub fn toggle_pause(&mut self) {
         self.paused = !self.paused;
-    }
-
-    /// 切换日志类型
-    pub fn toggle_kind(&mut self) {
-        self.source = self.source.toggle_kind();
-    }
-
-    /// 设置站点
-    pub fn set_site(&mut self, name: Option<String>) {
-        self.source = self.source.with_site(name);
     }
 
     /// 停止 tail 任务
@@ -2532,6 +2522,9 @@ impl AppState {
         }
         // 切到日志视图时启动 tail（或切换日志源）
         if !matches!(prev_route, Route::Logs) && matches!(self.route, Route::Logs) {
+            let kind = self.logs.source.kind();
+            let site_name = self.current_logs_site_name();
+            self.rebuild_logs_source(site_name, kind);
             self.logs.pending_tail_change = true;
         }
         // 离开日志视图时停止 tail
@@ -2581,6 +2574,52 @@ impl AppState {
         ));
     }
 
+    fn detect_global_log_paths(&self) -> LogPaths {
+        let nginx_root = self
+            .ctx
+            .probe
+            .sites_available
+            .parent()
+            .unwrap_or(self.ctx.probe.sites_available.as_path());
+        crate::domain::log::detect_global_log_paths(&nginx_root.join("nginx.conf"))
+    }
+
+    fn build_global_log_source(&self, kind: LogKind) -> LogSource {
+        LogSource::global(kind, self.detect_global_log_paths())
+    }
+
+    fn build_site_log_source(&self, site: &Site, kind: LogKind) -> LogSource {
+        let global = self.detect_global_log_paths();
+        LogSource::site(
+            site.name.clone(),
+            kind,
+            LogPaths {
+                access: site.access_log_path.clone().or(global.access),
+                error: site.error_log_path.clone().or(global.error),
+            },
+        )
+    }
+
+    fn current_logs_site_name(&self) -> Option<String> {
+        match &self.logs.source {
+            LogSource::Global { .. } => None,
+            LogSource::Site { name, .. } => Some(name.clone()),
+        }
+    }
+
+    fn rebuild_logs_source(&mut self, site_name: Option<String>, kind: LogKind) {
+        self.logs.source = match site_name {
+            Some(name) => self
+                .sites
+                .list
+                .iter()
+                .find(|site| site.name == name)
+                .map(|site| self.build_site_log_source(site, kind))
+                .unwrap_or_else(|| self.build_global_log_source(kind)),
+            None => self.build_global_log_source(kind),
+        };
+    }
+
     /// 按 c 键：为当前选中站点申请证书，跳转到证书页
     fn request_cert_for_current_site(&mut self) {
         let Some(site) = self.sites.current() else {
@@ -2608,11 +2647,7 @@ impl AppState {
             self.notification = Some(Notification::info("请先选中一个站点".to_string()));
             return;
         };
-        let name = site.name.clone();
-        self.logs.source = crate::domain::log::LogSource::Site {
-            name,
-            kind: crate::domain::log::LogKind::Access,
-        };
+        self.logs.source = self.build_site_log_source(site, LogKind::Access);
         self.logs.clear_buffer();
         self.logs.pending_tail_change = true;
         self.route = Route::Logs;
@@ -3795,10 +3830,7 @@ impl AppState {
                     match (k.code, !self.sites.list.is_empty()) {
                         (KeyCode::Left | KeyCode::Char('h'), true) => {
                             // 切换到上一个站点（从站点列表）
-                            let cur_site = match &self.logs.source {
-                                LogSource::Global(_) => None,
-                                LogSource::Site { name, .. } => Some(name.clone()),
-                            };
+                            let cur_site = self.current_logs_site_name();
                             let cur_idx = self
                                 .sites
                                 .list
@@ -3815,16 +3847,13 @@ impl AppState {
                                 None => Some(self.sites.list.len() - 1),
                             };
                             let next_site = prev_idx.map(|i| self.sites.list[i].name.clone());
-                            self.logs.set_site(next_site);
+                            self.rebuild_logs_source(next_site, self.logs.source.kind());
                             self.logs.clear_buffer();
                             self.logs.pending_tail_change = true;
                         }
                         (KeyCode::Right | KeyCode::Char('l'), true) => {
                             // 切换到下一个站点
-                            let cur_site = match &self.logs.source {
-                                LogSource::Global(_) => None,
-                                LogSource::Site { name, .. } => Some(name.clone()),
-                            };
+                            let cur_site = self.current_logs_site_name();
                             let cur_idx = self
                                 .sites
                                 .list
@@ -3841,7 +3870,7 @@ impl AppState {
                                 None => Some(0),
                             };
                             let next_site = next_idx.map(|i| self.sites.list[i].name.clone());
-                            self.logs.set_site(next_site);
+                            self.rebuild_logs_source(next_site, self.logs.source.kind());
                             self.logs.clear_buffer();
                             self.logs.pending_tail_change = true;
                         }
@@ -3853,7 +3882,9 @@ impl AppState {
                 }
                 LogsFocus::KindSelector => match k.code {
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('t') => {
-                        self.logs.toggle_kind();
+                        let next_kind = self.logs.source.kind().toggle();
+                        let site_name = self.current_logs_site_name();
+                        self.rebuild_logs_source(site_name, next_kind);
                         self.logs.clear_buffer();
                         self.logs.pending_tail_change = true;
                     }

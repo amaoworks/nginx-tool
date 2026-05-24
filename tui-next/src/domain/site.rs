@@ -66,6 +66,8 @@ pub struct Site {
     pub name: String,
     pub primary_domain: Option<String>,
     pub all_domains: Vec<String>,
+    pub access_log_path: Option<PathBuf>,
+    pub error_log_path: Option<PathBuf>,
     pub site_type: SiteType,
     pub target: Option<String>,
     pub enabled: bool,
@@ -78,6 +80,8 @@ pub struct ParsedConfig {
     pub server_names: Vec<String>,
     pub proxy_pass: Option<String>,
     pub static_root: Option<String>,
+    pub access_log_path: Option<PathBuf>,
+    pub error_log_path: Option<PathBuf>,
     pub has_emby_marker: bool,
 }
 
@@ -91,11 +95,14 @@ pub fn parse_config(text: &str) -> ParsedConfig {
         .join("\n");
 
     let directive_re =
-        regex::Regex::new(r"(?m)^\s*(server_name|proxy_pass|root)\s+([^;]+);").unwrap();
+        regex::Regex::new(r"(?m)^\s*(server_name|proxy_pass|root|access_log|error_log)\s+([^;]+);")
+            .unwrap();
 
     let mut server_names: Vec<String> = Vec::new();
     let mut proxy_pass: Option<String> = None;
     let mut static_root: Option<String> = None;
+    let mut access_log_path: Option<PathBuf> = None;
+    let mut error_log_path: Option<PathBuf> = None;
 
     for cap in directive_re.captures_iter(&cleaned) {
         let name = &cap[1];
@@ -114,6 +121,20 @@ pub fn parse_config(text: &str) -> ParsedConfig {
             "root" if static_root.is_none() => {
                 static_root = Some(value.to_string());
             }
+            "access_log" if access_log_path.is_none() => {
+                if let Some(path) = value.split_whitespace().next() {
+                    if !path.eq_ignore_ascii_case("off") {
+                        access_log_path = Some(PathBuf::from(path));
+                    }
+                }
+            }
+            "error_log" if error_log_path.is_none() => {
+                if let Some(path) = value.split_whitespace().next() {
+                    if !path.eq_ignore_ascii_case("off") {
+                        error_log_path = Some(PathBuf::from(path));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -124,6 +145,8 @@ pub fn parse_config(text: &str) -> ParsedConfig {
         server_names,
         proxy_pass,
         static_root,
+        access_log_path,
+        error_log_path,
         has_emby_marker,
     }
 }
@@ -220,6 +243,8 @@ pub async fn list_sites(ctx: Arc<AppContext>) -> Result<Vec<Site>, NgToolError> 
             name: raw.name,
             primary_domain,
             all_domains: parsed.server_names,
+            access_log_path: parsed.access_log_path,
+            error_log_path: parsed.error_log_path,
             site_type,
             target,
             enabled: raw.enabled,
@@ -956,6 +981,8 @@ mod tests {
 server {
     listen 80;
     server_name app.example.com www.app.example.com;
+    access_log /srv/log/nginx/app.access.log main;
+    error_log /srv/log/nginx/app.error.log warn;
     location / {
         proxy_pass http://127.0.0.1:8080;
     }
@@ -967,6 +994,14 @@ server {
             vec!["app.example.com", "www.app.example.com"]
         );
         assert_eq!(p.proxy_pass.as_deref(), Some("http://127.0.0.1:8080"));
+        assert_eq!(
+            p.access_log_path,
+            Some(PathBuf::from("/srv/log/nginx/app.access.log"))
+        );
+        assert_eq!(
+            p.error_log_path,
+            Some(PathBuf::from("/srv/log/nginx/app.error.log"))
+        );
         assert!(p.static_root.is_none());
         assert!(!p.has_emby_marker);
         assert_eq!(infer_type(&p), SiteType::Proxy);
@@ -1017,6 +1052,23 @@ server {
         let p = parse_config(text);
         assert_eq!(p.server_names, vec!["real.example.com"]);
         assert_eq!(p.proxy_pass.as_deref(), Some("http://127.0.0.1:9090"));
+    }
+
+    #[test]
+    fn parse_config_supports_access_log_off() {
+        let text = r#"
+server {
+    server_name app.example.com;
+    access_log off;
+    error_log /var/log/nginx/app.error.log error;
+}
+"#;
+        let p = parse_config(text);
+        assert_eq!(p.access_log_path, None);
+        assert_eq!(
+            p.error_log_path,
+            Some(PathBuf::from("/var/log/nginx/app.error.log"))
+        );
     }
 
     #[test]
