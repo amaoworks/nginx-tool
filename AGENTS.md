@@ -151,3 +151,5 @@ git push origin v1.0.x
 - `tui-next/doc/` 下的设计文档需要许可才能改动
 - 思考使用英文，输出使用中文
 - 禁止自行修改.git下的内容不经过确认
+
+@RTK.md

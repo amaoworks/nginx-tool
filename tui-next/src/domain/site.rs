@@ -103,7 +103,9 @@ pub fn parse_config(text: &str) -> ParsedConfig {
         match name {
             "server_name" => {
                 for d in value.split_whitespace() {
-                    server_names.push(d.to_string());
+                    if !server_names.iter().any(|existing| existing == d) {
+                        server_names.push(d.to_string());
+                    }
                 }
             }
             "proxy_pass" if proxy_pass.is_none() => {
@@ -1015,6 +1017,23 @@ server {
         let p = parse_config(text);
         assert_eq!(p.server_names, vec!["real.example.com"]);
         assert_eq!(p.proxy_pass.as_deref(), Some("http://127.0.0.1:9090"));
+    }
+
+    #[test]
+    fn repeated_server_names_are_deduped() {
+        let text = r#"
+server {
+    listen 80;
+    server_name app.example.com;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name app.example.com;
+}
+"#;
+        let p = parse_config(text);
+        assert_eq!(p.server_names, vec!["app.example.com"]);
     }
 
     #[test]
