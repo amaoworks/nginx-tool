@@ -721,9 +721,19 @@ pub async fn create_site(
     // 可选证书申请（启用成功后）
     let mut cert_requested = false;
     if input.request_cert && input.enable_now {
+        let certbot = &ctx.settings.certbot;
+        if certbot.email.trim().is_empty() && !certbot.allow_unsafe_without_email {
+            return Ok(CreateSiteOutcome::CertFailed {
+                error: "未配置 certbot 邮箱，且未允许无邮箱注册".into(),
+            });
+        }
         cert_requested = true;
         let cert_domains = cert_domains_for_input(&input);
-        let mut cert_cmd = CommandSpec::new("certbot").arg("--nginx");
+        let mut cert_cmd = crate::infra::certbot::apply_registration_args(
+            CommandSpec::new("certbot").arg("--nginx"),
+            &certbot.email,
+            certbot.allow_unsafe_without_email,
+        );
         for domain in &cert_domains {
             cert_cmd = cert_cmd.arg("-d").arg(domain);
         }

@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 
+use crate::config::settings::AppSettings;
 use crate::infra::audit::AuditLogger;
 use crate::infra::executor::CommandExecutor;
 use crate::infra::flock::{LockState, SingleInstanceLock};
@@ -31,6 +32,7 @@ use crate::infra::systemd::SystemdAdapter;
 /// 在主循环全程作为只读上下文使用。
 pub struct AppContext {
     pub paths: AppPaths,
+    pub settings: AppSettings,
     pub probe: EnvironmentProbe,
     pub readonly_reason: Option<String>,
     pub executor: CommandExecutor,
@@ -57,12 +59,18 @@ impl AppContext {
 
 pub struct BootstrapOptions {
     pub force_readonly: bool,
+    pub config_override: Option<std::path::PathBuf>,
 }
 
 /// 启动期一次性初始化：建目录、回收 tmp、抢 flock、探依赖、构建 executor + audit。
 /// 任何步骤失败都不应直接退出 TUI；目录/锁失败时自动降级为只读模式并保留原因。
 pub fn bootstrap(opts: BootstrapOptions) -> anyhow::Result<AppContext> {
     let paths = AppPaths::detect().context("解析应用目录失败")?;
+    let config_path = opts
+        .config_override
+        .clone()
+        .unwrap_or_else(|| paths.config_file.clone());
+    let settings = AppSettings::load(&config_path);
 
     let mut readonly_reason: Option<String> = if opts.force_readonly {
         Some("启动参数 --readonly".into())
@@ -126,6 +134,7 @@ pub fn bootstrap(opts: BootstrapOptions) -> anyhow::Result<AppContext> {
 
     Ok(AppContext {
         paths,
+        settings,
         probe,
         readonly_reason,
         executor,

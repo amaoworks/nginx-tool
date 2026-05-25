@@ -79,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
 
     let ctx = Arc::new(bootstrap(BootstrapOptions {
         force_readonly: cli.readonly,
+        config_override: cli.config.clone(),
     })?);
 
     let mut terminal = enter_terminal()?;

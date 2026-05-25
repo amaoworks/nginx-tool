@@ -238,11 +238,19 @@ pub async fn request_cert(
             message: "申请证书需要至少一个域名".into(),
         });
     }
-    let mut spec = CommandSpec::new("certbot")
-        .arg("--nginx")
-        .arg("--non-interactive")
-        .arg("--agree-tos")
-        .timeout(Duration::from_secs(180));
+    let certbot = &ctx.settings.certbot;
+    if certbot.email.trim().is_empty() && !certbot.allow_unsafe_without_email {
+        return Err(NgToolError::InvalidInput {
+            field: "certbot.email".into(),
+            message: "未配置 certbot 邮箱，且未允许无邮箱注册".into(),
+        });
+    }
+    let mut spec = crate::infra::certbot::apply_registration_args(
+        CommandSpec::new("certbot").arg("--nginx"),
+        &certbot.email,
+        certbot.allow_unsafe_without_email,
+    )
+    .timeout(Duration::from_secs(180));
     for d in domains {
         spec = spec.arg("-d").arg(d);
     }

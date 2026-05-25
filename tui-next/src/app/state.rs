@@ -1131,6 +1131,13 @@ impl SiteEditState {
                 (String::new(), String::new())
             } else {
                 crate::template::renderer::parse_upstream(&self.target)
+                    .map(|(scheme, target)| {
+                        if self.target.contains("://") {
+                            (scheme, target)
+                        } else {
+                            (self.upstream_scheme.clone(), target)
+                        }
+                    })
                     .unwrap_or_else(|_| (self.upstream_scheme.clone(), self.target.clone()))
             };
 
@@ -4501,6 +4508,35 @@ server {
         let params = s.build_render_params();
         assert_eq!(params.domain_name, "app.example.com");
         assert_eq!(params.domain_aliases, "", "渲染参数中的附加域名也应该为空");
+    }
+
+    #[test]
+    fn site_edit_preserves_selected_https_scheme_for_plain_target() {
+        let parsed = crate::template::config_parser::parse_for_edit(
+            r#"
+server {
+    listen 80;
+    server_name app.example.com;
+    location / {
+        proxy_pass https://127.0.0.1:8443;
+    }
+}
+"#,
+        );
+
+        let mut s = SiteEditState::from_parsed("app", &parsed);
+        assert_eq!(s.upstream_scheme, "https");
+        assert_eq!(s.target, "127.0.0.1:8443");
+
+        let params = s.build_render_params();
+        assert_eq!(params.upstream_scheme, "https");
+        assert_eq!(params.upstream_target, "127.0.0.1:8443");
+
+        s.upstream_scheme = "https".into();
+        s.target = "127.0.0.1:8080".into();
+        let params = s.build_render_params();
+        assert_eq!(params.upstream_scheme, "https");
+        assert_eq!(params.upstream_target, "127.0.0.1:8080");
     }
 
     #[test]
