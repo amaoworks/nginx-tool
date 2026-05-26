@@ -230,7 +230,7 @@ impl CertsAction {
             CertsAction::RenewAll => "续期所有证书",
             CertsAction::CheckAutoRenew => "检查自动续签",
             CertsAction::InstallDeployHook => "安装 deploy hook",
-            CertsAction::DeleteOrphan => "清理多余证书",
+            CertsAction::DeleteOrphan => "清理全局多余",
         }
     }
 }
@@ -4167,6 +4167,8 @@ impl AppState {
                 let cert_names: Vec<String> =
                     candidates.iter().map(|c| c.cert.name.clone()).collect();
                 let mut lines = vec![
+                    "⚠️  这是全局操作，会清理所有站点的多余证书！".into(),
+                    "".into(),
                     format!(
                         "发现 {} 个可清理的多余证书（孤立或已被其他证书覆盖，且未被 nginx 引用）：",
                         candidates.len()
@@ -4179,7 +4181,8 @@ impl AppState {
                         .map(|c| c.cert.name.as_str())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    lines.push(format!("已跳过仍被 nginx 引用的多余证书：{}", skipped));
+                    lines.push("".into());
+                    lines.push(format!("已跳过仍被 nginx 引用的证书：{}", skipped));
                 }
                 lines.extend([
                     "".into(),
@@ -4187,7 +4190,7 @@ impl AppState {
                     "⚠️  此操作不可撤销！".into(),
                 ]);
                 let modal = Modal::confirm(
-                    "🗑️  清理多余证书",
+                    "🗑️  清理全局多余证书",
                     lines,
                     "确认删除",
                     crate::ui::modal::ModalAction::DeleteOrphanCerts { cert_names },
