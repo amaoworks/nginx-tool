@@ -68,16 +68,11 @@ fn render_status_line(frame: &mut Frame, area: Rect, state: &AppState) {
         ));
     }
     let orphan_count = state.certs.list.iter().filter(|item| item.orphan).count();
-    if orphan_count > 0 {
-        let cleanup_count = state
-            .certs
-            .list
-            .iter()
-            .filter(|item| item.orphan && !item.nginx_referenced)
-            .count();
+    let cleanup_count = crate::domain::cert::cleanup_candidates(&state.certs.list).len();
+    if orphan_count > 0 || cleanup_count > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            format!("孤立证书 {} 个 / 可清理 {} 个", orphan_count, cleanup_count),
+            format!("孤立 {} 个 / 可清理多余 {} 个", orphan_count, cleanup_count),
             Style::default().fg(theme::FG_WARN),
         ));
     }
@@ -230,26 +225,20 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
                 .as_ref()
                 .is_some_and(|s| s.deploy_hook_present);
 
-        // 没有孤立证书时，删除按钮不可用
-        let no_orphans = matches!(action, CertsAction::DeleteOrphan)
-            && state
-                .certs
-                .list
-                .iter()
-                .filter(|item| item.orphan && !item.nginx_referenced)
-                .count()
-                == 0;
+        // 没有可安全清理的孤立/冗余证书时，删除按钮不可用
+        let no_cleanup_candidates = matches!(action, CertsAction::DeleteOrphan)
+            && crate::domain::cert::cleanup_candidates(&state.certs.list).is_empty();
 
         let label = if busy {
             format!("[ {}（执行中）]", action.label())
         } else if hook_ok {
             "[ ✓ 钩子已就绪 ]".to_string()
-        } else if no_orphans {
-            "[ 无孤立证书 ]".to_string()
+        } else if no_cleanup_candidates {
+            "[ 无多余证书 ]".to_string()
         } else {
             format!("[ {} ]", action.label())
         };
-        let style = if disabled || hook_ok || no_orphans {
+        let style = if disabled || hook_ok || no_cleanup_candidates {
             Style::default()
                 .fg(theme::FG_DIM)
                 .add_modifier(Modifier::DIM)

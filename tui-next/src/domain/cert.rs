@@ -3,7 +3,7 @@
 //! 数据来源：`certbot certificates` 输出文本解析；解析失败保留原始输出（R2 闭环）。
 //! 关联站点：基于 server_name 与证书 Domains 字段交叉匹配。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -233,6 +233,83 @@ pub fn mark_nginx_references(items: &mut [CertWithSite], nginx_root: &Path) {
     for item in items {
         item.nginx_referenced = cert_is_referenced(&item.cert, &refs);
     }
+}
+
+/// 可自动清理的证书：未被 nginx 引用，且要么孤立，要么其全部域名都由其他更合适的证书覆盖。
+pub fn cleanup_candidates(items: &[CertWithSite]) -> Vec<&CertWithSite> {
+    let keepers = domain_keepers(items);
+    items
+        .iter()
+        .filter(|item| {
+            !item.nginx_referenced && (item.orphan || is_redundant_cert(item, items, &keepers))
+        })
+        .collect()
+}
+
+/// 不可直接清理但值得提示的证书：看起来多余，不过 nginx 配置仍在引用。
+pub fn referenced_cleanup_skips(items: &[CertWithSite]) -> Vec<&CertWithSite> {
+    let keepers = domain_keepers(items);
+    items
+        .iter()
+        .filter(|item| {
+            item.nginx_referenced && (item.orphan || is_redundant_cert(item, items, &keepers))
+        })
+        .collect()
+}
+
+fn is_redundant_cert(
+    item: &CertWithSite,
+    items: &[CertWithSite],
+    keepers: &HashMap<String, String>,
+) -> bool {
+    !item.orphan
+        && !item.cert.domains.is_empty()
+        && item.cert.domains.iter().all(|domain| {
+            let covered_by_other = items.iter().any(|other| {
+                other.cert.name != item.cert.name && other.cert.domains.iter().any(|d| d == domain)
+            });
+            covered_by_other
+                && keepers
+                    .get(domain)
+                    .is_some_and(|keeper| keeper != &item.cert.name)
+        })
+}
+
+fn domain_keepers(items: &[CertWithSite]) -> HashMap<String, String> {
+    let mut keepers = HashMap::new();
+    let domains: HashSet<String> = items
+        .iter()
+        .flat_map(|item| item.cert.domains.iter().cloned())
+        .collect();
+    for domain in domains {
+        if let Some(best) = items
+            .iter()
+            .filter(|item| item.cert.domains.iter().any(|d| d == &domain))
+            .min_by_key(|item| cert_keep_rank(item, &domain))
+        {
+            keepers.insert(domain, best.cert.name.clone());
+        }
+    }
+    keepers
+}
+
+fn cert_keep_rank(
+    item: &CertWithSite,
+    domain: &str,
+) -> (u8, usize, std::cmp::Reverse<i64>, String) {
+    let primary_matches = item.cert.primary_domain() == Some(domain);
+    (
+        if item.nginx_referenced {
+            0
+        } else if primary_matches {
+            1
+        } else {
+            2
+        },
+        item.cert.domains.len(),
+        std::cmp::Reverse(item.cert.days_left.unwrap_or(i64::MIN)),
+        item.cert.name.clone(),
+    )
 }
 
 fn collect_ssl_certificate_refs(nginx_root: &Path) -> HashSet<String> {
@@ -789,6 +866,57 @@ Found the following certs:
 
         mark_nginx_references(&mut items, &nginx_root);
         assert!(items[0].nginx_referenced);
+    }
+
+    #[test]
+    fn cleanup_candidates_include_unreferenced_redundant_multidomain_cert() {
+        let items = vec![
+            CertWithSite {
+                cert: Certificate {
+                    name: "old-bundle".into(),
+                    domains: vec!["app.example.com".into(), "api.example.com".into()],
+                    expiry: None,
+                    days_left: Some(80),
+                    level: Some(CertLevel::Ok),
+                    cert_path: Some("/etc/letsencrypt/live/old-bundle/fullchain.pem".into()),
+                },
+                site_names: vec!["app".into(), "api".into()],
+                orphan: false,
+                nginx_referenced: false,
+            },
+            CertWithSite {
+                cert: Certificate {
+                    name: "app.example.com".into(),
+                    domains: vec!["app.example.com".into()],
+                    expiry: None,
+                    days_left: Some(89),
+                    level: Some(CertLevel::Ok),
+                    cert_path: Some("/etc/letsencrypt/live/app.example.com/fullchain.pem".into()),
+                },
+                site_names: vec!["app".into()],
+                orphan: false,
+                nginx_referenced: true,
+            },
+            CertWithSite {
+                cert: Certificate {
+                    name: "api.example.com".into(),
+                    domains: vec!["api.example.com".into()],
+                    expiry: None,
+                    days_left: Some(79),
+                    level: Some(CertLevel::Ok),
+                    cert_path: Some("/etc/letsencrypt/live/api.example.com/fullchain.pem".into()),
+                },
+                site_names: vec!["api".into()],
+                orphan: false,
+                nginx_referenced: true,
+            },
+        ];
+
+        let names: Vec<_> = cleanup_candidates(&items)
+            .iter()
+            .map(|item| item.cert.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["old-bundle"]);
     }
 
     #[test]

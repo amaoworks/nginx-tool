@@ -230,7 +230,7 @@ impl CertsAction {
             CertsAction::RenewAll => "续期所有证书",
             CertsAction::CheckAutoRenew => "检查自动续签",
             CertsAction::InstallDeployHook => "安装 deploy hook",
-            CertsAction::DeleteOrphan => "清理孤立证书",
+            CertsAction::DeleteOrphan => "清理多余证书",
         }
     }
 }
@@ -4152,43 +4152,34 @@ impl AppState {
                     self.notification = Some(Notification::failure("certbot 未安装".to_string()));
                     return;
                 }
-                let safe_orphans: Vec<_> = self
-                    .certs
-                    .list
-                    .iter()
-                    .filter(|item| item.orphan && !item.nginx_referenced)
-                    .collect();
-                let referenced_orphans: Vec<_> = self
-                    .certs
-                    .list
-                    .iter()
-                    .filter(|item| item.orphan && item.nginx_referenced)
-                    .collect();
-                if safe_orphans.is_empty() {
-                    let msg = if referenced_orphans.is_empty() {
-                        "当前没有可清理的孤立证书"
+                let candidates = crate::domain::cert::cleanup_candidates(&self.certs.list);
+                let referenced_skips =
+                    crate::domain::cert::referenced_cleanup_skips(&self.certs.list);
+                if candidates.is_empty() {
+                    let msg = if referenced_skips.is_empty() {
+                        "当前没有可清理的多余证书"
                     } else {
-                        "孤立证书仍被 nginx 配置引用，已跳过"
+                        "多余证书仍被 nginx 配置引用，已跳过"
                     };
                     self.notification = Some(Notification::info(msg.to_string()));
                     return;
                 }
                 let cert_names: Vec<String> =
-                    safe_orphans.iter().map(|c| c.cert.name.clone()).collect();
+                    candidates.iter().map(|c| c.cert.name.clone()).collect();
                 let mut lines = vec![
                     format!(
-                        "发现 {} 个可安全清理的孤立证书（未关联站点且未被 nginx 引用）：",
-                        safe_orphans.len()
+                        "发现 {} 个可清理的多余证书（孤立或已被其他证书覆盖，且未被 nginx 引用）：",
+                        candidates.len()
                     ),
                     cert_names.join(", "),
                 ];
-                if !referenced_orphans.is_empty() {
-                    let skipped = referenced_orphans
+                if !referenced_skips.is_empty() {
+                    let skipped = referenced_skips
                         .iter()
                         .map(|c| c.cert.name.as_str())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    lines.push(format!("已跳过仍被 nginx 引用的孤立证书：{}", skipped));
+                    lines.push(format!("已跳过仍被 nginx 引用的多余证书：{}", skipped));
                 }
                 lines.extend([
                     "".into(),
@@ -4196,7 +4187,7 @@ impl AppState {
                     "⚠️  此操作不可撤销！".into(),
                 ]);
                 let modal = Modal::confirm(
-                    "🗑️  清理孤立证书",
+                    "🗑️  清理多余证书",
                     lines,
                     "确认删除",
                     crate::ui::modal::ModalAction::DeleteOrphanCerts { cert_names },
