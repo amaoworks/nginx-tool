@@ -193,6 +193,106 @@ pub fn rebuild_config(
     crate::template::renderer::render(kind, params)
 }
 
+/// 从原始配置中提取 SSL 相关指令
+pub fn extract_ssl_config(content: &str) -> Vec<String> {
+    let mut ssl_lines = Vec::new();
+    let mut in_server_block = false;
+    let mut brace_depth = 0;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // 跟踪 server 块
+        if trimmed.starts_with("server") && trimmed.contains('{') {
+            in_server_block = true;
+            brace_depth = 1;
+            continue;
+        }
+
+        if in_server_block {
+            // 跟踪大括号深度
+            brace_depth += trimmed.matches('{').count() as i32;
+            brace_depth -= trimmed.matches('}').count() as i32;
+
+            // 只在 server 块的第一层提取 SSL 指令
+            if brace_depth == 1 {
+                // 提取 SSL 相关指令
+                if trimmed.starts_with("listen") && trimmed.contains("443") && trimmed.contains("ssl")
+                    || trimmed.starts_with("ssl_certificate ")
+                    || trimmed.starts_with("ssl_certificate_key ")
+                    || trimmed.starts_with("ssl_protocols ")
+                    || trimmed.starts_with("ssl_ciphers ")
+                    || trimmed.starts_with("ssl_prefer_server_ciphers ")
+                    || trimmed.starts_with("ssl_session_cache ")
+                    || trimmed.starts_with("ssl_session_timeout ")
+                    || trimmed.starts_with("ssl_stapling ")
+                    || trimmed.starts_with("ssl_stapling_verify ")
+                    || trimmed.starts_with("ssl_trusted_certificate ")
+                {
+                    ssl_lines.push(line.to_string());
+                }
+            }
+
+            // 退出 server 块
+            if brace_depth == 0 {
+                in_server_block = false;
+            }
+        }
+    }
+
+    ssl_lines
+}
+
+/// 将 SSL 配置注入到渲染后的配置中
+pub fn inject_ssl_config(rendered: &str, ssl_lines: &[String]) -> String {
+    if ssl_lines.is_empty() {
+        return rendered.to_string();
+    }
+
+    let mut result = Vec::new();
+    let mut in_server_block = false;
+    let mut brace_depth = 0;
+    let mut ssl_injected = false;
+
+    for line in rendered.lines() {
+        let trimmed = line.trim();
+
+        // 检测 server 块开始
+        if trimmed.starts_with("server") && trimmed.contains('{') {
+            in_server_block = true;
+            brace_depth = 1;
+            result.push(line.to_string());
+            continue;
+        }
+
+        if in_server_block {
+            // 跟踪大括号深度
+            brace_depth += trimmed.matches('{').count() as i32;
+            brace_depth -= trimmed.matches('}').count() as i32;
+
+            // 在第一个 listen 80 指令后注入 SSL 配置
+            if !ssl_injected && brace_depth == 1 && trimmed.starts_with("listen") && trimmed.contains("80") {
+                result.push(line.to_string());
+                // 注入 SSL 配置
+                for ssl_line in ssl_lines {
+                    result.push(ssl_line.clone());
+                }
+                ssl_injected = true;
+                continue;
+            }
+
+            // 退出 server 块
+            if brace_depth == 0 {
+                in_server_block = false;
+            }
+        }
+
+        result.push(line.to_string());
+    }
+
+    result.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +407,58 @@ server {
                 "long_timeout".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn extract_ssl_config_finds_ssl_directives() {
+        let content = r#"
+server {
+    listen 80;
+    listen 443 ssl;
+    server_name app.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/app.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/app.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+"#;
+        let ssl_lines = extract_ssl_config(content);
+        assert_eq!(ssl_lines.len(), 4);
+        assert!(ssl_lines.iter().any(|l| l.contains("listen 443 ssl")));
+        assert!(ssl_lines.iter().any(|l| l.contains("ssl_certificate ")));
+        assert!(ssl_lines.iter().any(|l| l.contains("ssl_certificate_key")));
+        assert!(ssl_lines.iter().any(|l| l.contains("ssl_protocols")));
+    }
+
+    #[test]
+    fn inject_ssl_config_adds_ssl_after_listen_80() {
+        let rendered = r#"server {
+    listen 80;
+    server_name app.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}"#;
+        let ssl_lines = vec![
+            "    listen 443 ssl;".to_string(),
+            "    ssl_certificate /etc/letsencrypt/live/app.example.com/fullchain.pem;".to_string(),
+            "    ssl_certificate_key /etc/letsencrypt/live/app.example.com/privkey.pem;".to_string(),
+        ];
+
+        let result = inject_ssl_config(rendered, &ssl_lines);
+        assert!(result.contains("listen 80"));
+        assert!(result.contains("listen 443 ssl"));
+        assert!(result.contains("ssl_certificate"));
+        assert!(result.contains("ssl_certificate_key"));
+
+        // 验证 SSL 配置在 listen 80 之后
+        let listen_80_pos = result.find("listen 80").unwrap();
+        let listen_443_pos = result.find("listen 443 ssl").unwrap();
+        assert!(listen_443_pos > listen_80_pos);
     }
 }

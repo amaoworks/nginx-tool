@@ -3731,13 +3731,20 @@ impl AppState {
 
         let params = self.site_edit.build_render_params();
         let kind = self.site_edit.site_kind();
-        let content = match crate::template::renderer::render(kind, &params) {
+        let mut content = match crate::template::renderer::render(kind, &params) {
             Ok(c) => c,
             Err(e) => {
                 self.notification = Some(Notification::failure(format!("渲染失败：{}", e)));
                 return;
             }
         };
+
+        // 从原始配置中提取 SSL 配置并注入到新渲染的配置中
+        let original_content = &self.site_edit.raw_lines.join("\n");
+        let ssl_lines = crate::template::config_parser::extract_ssl_config(original_content);
+        if !ssl_lines.is_empty() {
+            content = crate::template::config_parser::inject_ssl_config(&content, &ssl_lines);
+        }
 
         let site_name = self.site_edit.site_name.clone();
         let expected_mtime = self.site_edit.mtime_at_load;
