@@ -83,6 +83,12 @@ pub enum AppEvent {
     /// 证书页：安装 deploy hook 结果
     CertInstallHookResult(Box<Result<(), NgToolError>>),
 
+    /// 证书页：删除证书结果
+    CertDeleteResult {
+        cert_name: String,
+        result: Box<Result<String, NgToolError>>,
+    },
+
     /// 备份列表加载完成
     BackupListLoaded(Box<Result<Vec<Backup>, String>>),
 

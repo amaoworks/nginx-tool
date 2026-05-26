@@ -218,19 +218,8 @@ fn footer_hints(state: &AppState) -> String {
         Route::Sites(SitesRoute::EditSlotFull { .. }) => footer_hints_for_slot_full(),
         Route::Certs => footer_hints_for_certs(state),
         Route::Logs => footer_hints_for_logs(state),
-        Route::Service => vec![
-            "[←→] 选按钮",
-            "[Enter] 执行",
-            "[c] 清空",
-            "[Esc] 返回侧栏",
-        ],
-        Route::Backup => vec![
-            "[↑↓] 选择",
-            "[n] 新建",
-            "[r] 还原",
-            "[d] 删除",
-            "[R] 刷新",
-        ],
+        Route::Service => vec!["[←→] 选按钮", "[Enter] 执行", "[c] 清空", "[Esc] 返回侧栏"],
+        Route::Backup => vec!["[↑↓] 选择", "[n] 新建", "[r] 还原", "[d] 删除", "[R] 刷新"],
     };
 
     let mut s = format!(" {} | ", route_label);
@@ -242,28 +231,14 @@ fn footer_hints(state: &AppState) -> String {
 fn footer_hints_for_site_form(state: &AppState) -> Vec<&'static str> {
     match state.site_form.focused {
         FormField::SiteName | FormField::Domain | FormField::DomainAliases | FormField::Target => {
-            vec![
-                "[Tab] 下一项",
-                "[Shift+Tab] 上一项",
-                "[Esc] 返回",
-            ]
+            vec!["[Tab] 下一项", "[Shift+Tab] 上一项", "[Esc] 返回"]
         }
-        FormField::SiteType => vec![
-            "[↑↓←→] 选择",
-            "[Tab] 切区域",
-            "[Esc] 返回",
-        ],
-        FormField::EnableCheckbox | FormField::CertCheckbox => vec![
-            "[Space] 切换",
-            "[Tab] 切区域",
-            "[Esc] 返回",
-        ],
+        FormField::SiteType => vec!["[↑↓←→] 选择", "[Tab] 切区域", "[Esc] 返回"],
+        FormField::EnableCheckbox | FormField::CertCheckbox => {
+            vec!["[Space] 切换", "[Tab] 切区域", "[Esc] 返回"]
+        }
         FormField::SubmitButton => vec!["[Enter] 创建", "[F2] 创建", "[Esc] 返回"],
-        _ => vec![
-            "[←→] 切换",
-            "[Space] 开关",
-            "[Esc] 返回",
-        ],
+        _ => vec!["[←→] 切换", "[Space] 开关", "[Esc] 返回"],
     }
 }
 
@@ -341,12 +316,9 @@ fn footer_hints_for_certs(state: &AppState) -> Vec<&'static str> {
 fn footer_hints_for_logs(state: &AppState) -> Vec<&'static str> {
     match state.logs.focused {
         LogsFocus::SearchInput => vec!["[Enter] 搜索", "[Esc] 取消", "[Tab] 切区域"],
-        LogsFocus::SiteSelector | LogsFocus::KindSelector => vec![
-            "[←→] 切换",
-            "[Tab] 切区域",
-            "[/] 搜索",
-            "[Esc] 返回侧栏",
-        ],
+        LogsFocus::SiteSelector | LogsFocus::KindSelector => {
+            vec!["[←→] 切换", "[Tab] 切区域", "[/] 搜索", "[Esc] 返回侧栏"]
+        }
         LogsFocus::LogContent => vec![
             "[↑↓←→] 滚动",
             "[PgUp/PgDn] 翻页",

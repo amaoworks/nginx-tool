@@ -42,6 +42,10 @@ pub enum ModalAction {
     UpgradeTui,
     /// 确认安装 deploy hook
     InstallDeployHook,
+    /// 确认删除孤立证书
+    DeleteOrphanCerts {
+        cert_names: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,9 +147,7 @@ impl Modal {
     pub fn confirm_discard_site_edit() -> Self {
         Self::three_button(
             "⚠️  有未保存的修改",
-            vec![
-                "是否保存当前修改？".into(),
-            ],
+            vec!["是否保存当前修改？".into()],
             "保存并退出",
             ModalAction::SaveAndExitSiteEdit,
             "不保存退出",
@@ -265,11 +267,17 @@ fn button_row(modal: &Modal) -> Paragraph<'_> {
     }
 
     if let Some(ref label) = modal.secondary_label {
-        spans.push(render_button(label, modal.focused == ModalButton::Secondary));
+        spans.push(render_button(
+            label,
+            modal.focused == ModalButton::Secondary,
+        ));
         spans.push(Span::raw("  "));
     }
 
-    spans.push(render_button(&modal.cancel_label, modal.focused == ModalButton::Cancel));
+    spans.push(render_button(
+        &modal.cancel_label,
+        modal.focused == ModalButton::Cancel,
+    ));
 
     let line = Line::from(spans);
     Paragraph::new(line).alignment(Alignment::Center)

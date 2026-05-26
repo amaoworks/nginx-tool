@@ -105,7 +105,7 @@ impl LogSource {
                 LogKind::Error => error_path.clone().unwrap_or_else(|| {
                     PathBuf::from("/var/log/nginx").join(format!("{name}.error.log"))
                 }),
-            }
+            },
         }
     }
 

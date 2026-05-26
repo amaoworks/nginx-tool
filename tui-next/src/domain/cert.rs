@@ -3,7 +3,9 @@
 //! 数据来源：`certbot certificates` 输出文本解析；解析失败保留原始输出（R2 闭环）。
 //! 关联站点：基于 server_name 与证书 Domains 字段交叉匹配。
 
+use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,6 +84,8 @@ pub struct CertWithSite {
     pub site_names: Vec<String>,
     /// 是否为孤立证书：证书存在但无任何匹配的站点。
     pub orphan: bool,
+    /// 是否仍被 nginx 配置中的 ssl_certificate 引用。引用中的孤立证书不应自动清理。
+    pub nginx_referenced: bool,
 }
 
 /// 解析 `certbot certificates` 输出为证书列表。
@@ -214,9 +218,74 @@ pub fn associate_with_sites(
                 cert,
                 site_names: matched,
                 orphan,
+                nginx_referenced: false,
             }
         })
         .collect()
+}
+
+/// 扫描 nginx 配置，标记证书是否仍被 `ssl_certificate` 指令引用。
+pub fn mark_nginx_references(items: &mut [CertWithSite], nginx_root: &Path) {
+    let refs = collect_ssl_certificate_refs(nginx_root);
+    if refs.is_empty() {
+        return;
+    }
+    for item in items {
+        item.nginx_referenced = cert_is_referenced(&item.cert, &refs);
+    }
+}
+
+fn collect_ssl_certificate_refs(nginx_root: &Path) -> HashSet<String> {
+    let mut refs = HashSet::new();
+    let re = regex::Regex::new(r"\bssl_certificate\s+([^;#\s]+)").unwrap();
+    for entry in walkdir::WalkDir::new(nginx_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        if !looks_like_nginx_config(path) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for cap in re.captures_iter(&text) {
+            if let Some(value) = cap.get(1).map(|m| m.as_str().trim_matches('"')) {
+                refs.insert(value.to_string());
+            }
+        }
+    }
+    refs
+}
+
+fn looks_like_nginx_config(path: &Path) -> bool {
+    path.extension().and_then(|s| s.to_str()) == Some("conf")
+        || path.file_name().and_then(|s| s.to_str()) == Some("nginx.conf")
+}
+
+fn cert_is_referenced(cert: &Certificate, refs: &HashSet<String>) -> bool {
+    let cert_path = cert.cert_path.as_deref();
+    refs.iter().any(|r| {
+        Some(r.as_str()) == cert_path
+            || r.contains(&format!("/live/{}/", cert.name))
+            || cert_path.is_some_and(|p| same_letsencrypt_live_cert(r, p))
+    })
+}
+
+fn same_letsencrypt_live_cert(left: &str, right: &str) -> bool {
+    letsencrypt_live_name(left)
+        .is_some_and(|l| letsencrypt_live_name(right).is_some_and(|r| l == r))
+}
+
+fn letsencrypt_live_name(path: &str) -> Option<&str> {
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let live_pos = parts.iter().position(|part| *part == "live")?;
+    if parts.get(live_pos + 2).copied() != Some("fullchain.pem") {
+        return None;
+    }
+    parts.get(live_pos + 1).copied()
 }
 
 /// 按域名集合申请证书。`certbot --nginx -d <d1> -d <d2> ...`
@@ -349,6 +418,70 @@ pub async fn renew_all(ctx: Arc<AppContext>) -> Result<String, NgToolError> {
     }
 }
 
+/// `certbot delete --cert-name <name>`：删除指定证书。
+/// 用于清理孤立证书或不再需要的证书。
+pub async fn delete_cert(ctx: Arc<AppContext>, cert_name: &str) -> Result<String, NgToolError> {
+    let started = std::time::Instant::now();
+    if !ctx.deps().certbot {
+        return Err(NgToolError::DependencyMissing {
+            name: "certbot".into(),
+        });
+    }
+    if cert_name.trim().is_empty() {
+        return Err(NgToolError::InvalidInput {
+            field: "cert_name".into(),
+            message: "证书名称不能为空".into(),
+        });
+    }
+    match ctx
+        .executor
+        .run(
+            CommandSpec::new("certbot")
+                .arg("delete")
+                .arg("--cert-name")
+                .arg(cert_name)
+                .arg("--non-interactive")
+                .timeout(Duration::from_secs(30)),
+        )
+        .await
+    {
+        Ok(out) => {
+            let combined = out.combined();
+            let result = if out.ok() {
+                AuditResult::Success
+            } else {
+                AuditResult::Failure
+            };
+            ctx.audit.log(
+                "cert.delete",
+                cert_name,
+                result,
+                started.elapsed().as_millis() as u64,
+                json!({"exit": out.code()}),
+            );
+            if out.ok() {
+                Ok(combined)
+            } else {
+                Err(NgToolError::CommandFailed {
+                    command: format!("certbot delete --cert-name {}", cert_name),
+                    code: out.code(),
+                    stderr: combined,
+                })
+            }
+        }
+        Err(e) => {
+            ctx.audit.log(
+                "cert.delete",
+                cert_name,
+                AuditResult::Failure,
+                started.elapsed().as_millis() as u64,
+                json!({"error": e.to_string()}),
+            );
+            Err(e)
+        }
+    }
+}
+
 /// 自动续签状态检查结果（execution.md P8-8）。
 #[derive(Debug, Clone, Serialize)]
 pub struct AutoRenewStatus {
@@ -417,7 +550,11 @@ pub async fn collect_snapshot(ctx: Arc<AppContext>) -> CertsSnapshot {
                 let sites = crate::domain::site::list_sites(ctx.clone())
                     .await
                     .unwrap_or_default();
-                associate_with_sites(parsed, &sites)
+                let mut items = associate_with_sites(parsed, &sites);
+                if let Some(nginx_root) = ctx.probe.sites_available.parent() {
+                    mark_nginx_references(&mut items, nginx_root);
+                }
+                items
             }
             Err(e) => {
                 error = Some(e.to_string());
@@ -619,8 +756,39 @@ Found the following certs:
         assert_eq!(assoc.len(), 2);
         assert_eq!(assoc[0].site_names, vec!["app"]);
         assert!(!assoc[0].orphan);
+        assert!(!assoc[0].nginx_referenced);
         assert!(assoc[1].orphan);
         assert!(assoc[1].site_names.is_empty());
+    }
+
+    #[test]
+    fn mark_nginx_references_detects_live_cert_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nginx_root = tmp.path().join("nginx");
+        let sites_available = nginx_root.join("sites-available");
+        std::fs::create_dir_all(&sites_available).unwrap();
+        std::fs::write(
+            sites_available.join("app.conf"),
+            "server { ssl_certificate /etc/letsencrypt/live/legacy/fullchain.pem; }",
+        )
+        .unwrap();
+
+        let mut items = vec![CertWithSite {
+            cert: Certificate {
+                name: "legacy".into(),
+                domains: vec!["legacy.example.com".into()],
+                expiry: None,
+                days_left: Some(60),
+                level: Some(CertLevel::Ok),
+                cert_path: Some("/etc/letsencrypt/live/legacy/fullchain.pem".into()),
+            },
+            site_names: Vec::new(),
+            orphan: true,
+            nginx_referenced: false,
+        }];
+
+        mark_nginx_references(&mut items, &nginx_root);
+        assert!(items[0].nginx_referenced);
     }
 
     #[test]

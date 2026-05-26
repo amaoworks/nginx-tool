@@ -295,7 +295,10 @@ server {
 }
 "#;
         let edit = parse_for_edit(content);
-        assert_eq!(edit.managed_type, Some(crate::domain::site::SiteType::Proxy));
+        assert_eq!(
+            edit.managed_type,
+            Some(crate::domain::site::SiteType::Proxy)
+        );
         assert_eq!(
             edit.managed_features,
             vec![

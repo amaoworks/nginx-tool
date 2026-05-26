@@ -130,7 +130,10 @@ fn render_output(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::BORDER))
-        .title(Span::styled(" 操作输出 ", Style::default().fg(theme::FG_PATH)));
+        .title(Span::styled(
+            " 操作输出 ",
+            Style::default().fg(theme::FG_PATH),
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

@@ -113,9 +113,15 @@ pub fn render(kind: SiteKind, params: &RenderParams) -> Result<String, String> {
         ("feature_websocket", params.feature_websocket.to_string()),
         ("feature_large_body", params.feature_large_body.to_string()),
         ("feature_cors", params.feature_cors.to_string()),
-        ("feature_long_timeout", params.feature_long_timeout.to_string()),
+        (
+            "feature_long_timeout",
+            params.feature_long_timeout.to_string(),
+        ),
         ("feature_spa_mode", params.feature_spa_mode.to_string()),
-        ("feature_static_cache", params.feature_static_cache.to_string()),
+        (
+            "feature_static_cache",
+            params.feature_static_cache.to_string(),
+        ),
         (
             "feature_block_sensitive",
             params.feature_block_sensitive.to_string(),

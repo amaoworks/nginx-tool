@@ -315,6 +315,20 @@ async fn run(terminal: &mut Tui, ctx: Arc<AppContext>) -> anyhow::Result<()> {
             });
         }
 
+        // 派发待执行的异步意图：删除证书
+        if let Some(cert_name) = state.take_cert_delete() {
+            let ctx_clone = ctx.clone();
+            let tx_clone = task_tx.clone();
+            let name = cert_name.clone();
+            tokio::spawn(async move {
+                let result = domain::cert::delete_cert(ctx_clone, &name).await;
+                let _ = tx_clone.send(AppEvent::CertDeleteResult {
+                    cert_name: name,
+                    result: Box::new(result),
+                });
+            });
+        }
+
         // 派发待执行的异步意图：备份列表刷新
         if state.take_backup_refresh_request() {
             let ctx_clone = ctx.clone();

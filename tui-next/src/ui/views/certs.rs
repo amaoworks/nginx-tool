@@ -8,8 +8,8 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::state::{AppState, CertsAction, CertsFocus};
-use crate::domain::site::Site;
 use crate::domain::cert::{CertLevel, CertWithSite};
+use crate::domain::site::Site;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -55,7 +55,10 @@ fn render_status_line(frame: &mut Frame, area: Rect, state: &AppState) {
             Style::default().fg(theme::FG_DIM),
         ));
     } else {
-        spans.push(Span::styled("等待首次刷新…", Style::default().fg(theme::FG_DIM)));
+        spans.push(Span::styled(
+            "等待首次刷新…",
+            Style::default().fg(theme::FG_DIM),
+        ));
     }
     if state.certs.raw_output.is_some() {
         spans.push(Span::raw("  "));
@@ -66,9 +69,15 @@ fn render_status_line(frame: &mut Frame, area: Rect, state: &AppState) {
     }
     let orphan_count = state.certs.list.iter().filter(|item| item.orphan).count();
     if orphan_count > 0 {
+        let cleanup_count = state
+            .certs
+            .list
+            .iter()
+            .filter(|item| item.orphan && !item.nginx_referenced)
+            .count();
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            format!("孤立证书 {} 个", orphan_count),
+            format!("孤立证书 {} 个 / 可清理 {} 个", orphan_count, cleanup_count),
             Style::default().fg(theme::FG_WARN),
         ));
     }
@@ -128,7 +137,7 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
             Style::default()
         };
 
-        let certs = certs_for_site(state, &s.name);
+        let certs = certs_for_site(state, s);
         let cert_label = certs_label(&certs);
         let status_span = site_status_span(&certs);
         let domains = compact_domains(&s.all_domains);
@@ -184,17 +193,21 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
             )),
         ],
     };
-    frame.render_widget(Paragraph::new(detail_lines).wrap(Wrap { trim: false }), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(detail_lines).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
 
     // 操作按钮行
     let buttons_focused = state.certs.focused == CertsFocus::ActionButtons;
     let readonly = state.run_mode.is_readonly() || !state.ctx.deps().certbot;
 
     let cols = Layout::horizontal([
-        Constraint::Percentage(25),
-        Constraint::Percentage(25),
-        Constraint::Percentage(25),
-        Constraint::Percentage(25),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
     ])
     .split(chunks[1]);
 
@@ -204,7 +217,10 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
         let disabled = readonly
             && matches!(
                 action,
-                CertsAction::Request | CertsAction::RenewAll | CertsAction::InstallDeployHook
+                CertsAction::Request
+                    | CertsAction::RenewAll
+                    | CertsAction::InstallDeployHook
+                    | CertsAction::DeleteOrphan
             );
         // 钩子已安装时显示为已就绪，不可点击
         let hook_ok = matches!(action, CertsAction::InstallDeployHook)
@@ -214,14 +230,26 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
                 .as_ref()
                 .is_some_and(|s| s.deploy_hook_present);
 
+        // 没有孤立证书时，删除按钮不可用
+        let no_orphans = matches!(action, CertsAction::DeleteOrphan)
+            && state
+                .certs
+                .list
+                .iter()
+                .filter(|item| item.orphan && !item.nginx_referenced)
+                .count()
+                == 0;
+
         let label = if busy {
             format!("[ {}（执行中）]", action.label())
         } else if hook_ok {
             "[ ✓ 钩子已就绪 ]".to_string()
+        } else if no_orphans {
+            "[ 无孤立证书 ]".to_string()
         } else {
             format!("[ {} ]", action.label())
         };
-        let style = if disabled || hook_ok {
+        let style = if disabled || hook_ok || no_orphans {
             Style::default()
                 .fg(theme::FG_DIM)
                 .add_modifier(Modifier::DIM)
@@ -245,13 +273,37 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 }
 
-fn certs_for_site<'a>(state: &'a AppState, site_name: &str) -> Vec<&'a CertWithSite> {
-    state
+fn certs_for_site<'a>(state: &'a AppState, site: &Site) -> Vec<&'a CertWithSite> {
+    let mut certs: Vec<&CertWithSite> = state
         .certs
         .list
         .iter()
-        .filter(|item| item.site_names.iter().any(|name| name == site_name))
-        .collect()
+        .filter(|item| item.site_names.iter().any(|name| name == &site.name))
+        .collect();
+    certs.sort_by_key(|item| cert_rank_for_site(item, site));
+    certs
+}
+
+fn cert_rank_for_site(
+    item: &CertWithSite,
+    site: &Site,
+) -> (u8, usize, std::cmp::Reverse<i64>, String) {
+    let primary = site.primary_domain.as_deref();
+    let primary_matches = primary.is_some_and(|d| item.cert.primary_domain() == Some(d));
+    let contains_primary = primary.is_some_and(|d| item.cert.domains.iter().any(|cd| cd == d));
+    let rank = if primary_matches {
+        0
+    } else if contains_primary {
+        1
+    } else {
+        2
+    };
+    (
+        rank,
+        item.cert.domains.len(),
+        std::cmp::Reverse(item.cert.days_left.unwrap_or(i64::MIN)),
+        item.cert.name.clone(),
+    )
 }
 
 fn compact_domains(domains: &[String]) -> String {
@@ -273,18 +325,14 @@ fn certs_label(certs: &[&CertWithSite]) -> String {
 }
 
 fn site_status_span<'a>(certs: &[&CertWithSite]) -> Span<'a> {
-    let Some(best) = certs
-        .iter()
-        .copied()
-        .min_by_key(|item| item.cert.days_left.unwrap_or(i64::MAX))
-    else {
+    let Some(best) = certs.first().copied() else {
         return Span::styled("无证书", Style::default().fg(theme::FG_DIM));
     };
     render_status_span(best)
 }
 
 fn selected_site_lines(state: &AppState, site: &Site) -> Vec<Line<'static>> {
-    let certs = certs_for_site(state, &site.name);
+    let certs = certs_for_site(state, site);
     let focus_hint = if state.certs.focused == CertsFocus::Table {
         "  [Enter] 进入操作"
     } else {
@@ -299,13 +347,18 @@ fn selected_site_lines(state: &AppState, site: &Site) -> Vec<Line<'static>> {
         "证书: 未发现匹配证书".to_string()
     } else {
         let mut parts = Vec::new();
-        for cert in certs.iter().take(2) {
+        for (idx, cert) in certs.iter().take(2).enumerate() {
             let days = cert
                 .cert
                 .days_left
                 .map(|days| format!("{days}天"))
                 .unwrap_or_else(|| "未知".to_string());
-            parts.push(format!("{}({})", cert.cert.name, days));
+            let overlap = if idx == 0 || cert.cert.domains.len() == 1 {
+                ""
+            } else {
+                "/重叠"
+            };
+            parts.push(format!("{}({}{})", cert.cert.name, days, overlap));
         }
         if certs.len() > 2 {
             parts.push(format!("+{}", certs.len() - 2));
@@ -408,7 +461,10 @@ fn render_output(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(theme::BORDER))
-        .title(Span::styled(" 操作输出 ", Style::default().fg(theme::FG_PATH)));
+        .title(Span::styled(
+            " 操作输出 ",
+            Style::default().fg(theme::FG_PATH),
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

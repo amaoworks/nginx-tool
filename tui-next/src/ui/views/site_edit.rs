@@ -31,7 +31,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     lines.push(Line::from(""));
 
     lines.push(field_label("域名:", edit.focused == EditFocus::Domain));
-    lines.push(input_field(&edit.domain, edit.focused == EditFocus::Domain, "example.com"));
+    lines.push(input_field(
+        &edit.domain,
+        edit.focused == EditFocus::Domain,
+        "example.com",
+    ));
     if let Some(err) = edit.field_errors.get("domain") {
         lines.push(error_line(err));
     }
@@ -104,7 +108,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
             ));
         }
         crate::domain::site::SiteType::Static => {
-            lines.push(field_label("站点模式:", edit.focused == EditFocus::StaticMode));
+            lines.push(field_label(
+                "站点模式:",
+                edit.focused == EditFocus::StaticMode,
+            ));
             lines.push(static_mode_line(
                 edit.feature_spa_mode,
                 edit.focused == EditFocus::StaticMode,
@@ -208,7 +215,11 @@ fn scheme_line(current: &str, focused: bool) -> Line<'static> {
 
     Line::from(vec![
         Span::styled(
-            if http_selected { "◉ http" } else { "○ http" },
+            if http_selected {
+                "◉ http"
+            } else {
+                "○ http"
+            },
             if http_selected {
                 selected_style
             } else {
@@ -217,7 +228,11 @@ fn scheme_line(current: &str, focused: bool) -> Line<'static> {
         ),
         Span::raw("   "),
         Span::styled(
-            if !http_selected { "◉ https" } else { "○ https" },
+            if !http_selected {
+                "◉ https"
+            } else {
+                "○ https"
+            },
             if !http_selected {
                 selected_style
             } else {
@@ -239,7 +254,11 @@ fn static_mode_line(spa_mode: bool, focused: bool) -> Line<'static> {
 
     Line::from(vec![
         Span::styled(
-            if !spa_mode { "◉ 普通静态" } else { "○ 普通静态" },
+            if !spa_mode {
+                "◉ 普通静态"
+            } else {
+                "○ 普通静态"
+            },
             if !spa_mode {
                 selected_style
             } else {
@@ -248,7 +267,11 @@ fn static_mode_line(spa_mode: bool, focused: bool) -> Line<'static> {
         ),
         Span::raw("   "),
         Span::styled(
-            if spa_mode { "◉ SPA 单页" } else { "○ SPA 单页" },
+            if spa_mode {
+                "◉ SPA 单页"
+            } else {
+                "○ SPA 单页"
+            },
             if spa_mode {
                 selected_style
             } else {

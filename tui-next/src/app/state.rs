@@ -212,14 +212,16 @@ pub enum CertsAction {
     RenewAll,
     CheckAutoRenew,
     InstallDeployHook,
+    DeleteOrphan,
 }
 
 impl CertsAction {
-    pub const ALL: [CertsAction; 4] = [
+    pub const ALL: [CertsAction; 5] = [
         CertsAction::Request,
         CertsAction::RenewAll,
         CertsAction::CheckAutoRenew,
         CertsAction::InstallDeployHook,
+        CertsAction::DeleteOrphan,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -228,6 +230,7 @@ impl CertsAction {
             CertsAction::RenewAll => "续期所有证书",
             CertsAction::CheckAutoRenew => "检查自动续签",
             CertsAction::InstallDeployHook => "安装 deploy hook",
+            CertsAction::DeleteOrphan => "清理孤立证书",
         }
     }
 }
@@ -260,6 +263,10 @@ pub struct CertsState {
     pub pending_check_renew: bool,
     /// 待派发：安装 deploy hook
     pub pending_install_hook: bool,
+    /// 待派发：删除证书队列（证书名）
+    pub pending_delete: VecDeque<String>,
+    /// 删除队列中当前正在执行的证书名
+    pub delete_in_flight: Option<String>,
 }
 
 impl CertsState {
@@ -794,7 +801,9 @@ impl LogsState {
 
     /// 规范化滚动偏移，避免越界
     pub fn clamp_scroll(&mut self, visible_lines: usize) {
-        self.vertical_scroll = self.vertical_scroll.min(self.max_vertical_scroll(visible_lines));
+        self.vertical_scroll = self
+            .vertical_scroll
+            .min(self.max_vertical_scroll(visible_lines));
     }
 
     /// 跳到底部并开启自动跟随
@@ -1117,7 +1126,8 @@ impl SiteEditState {
                 self.set_error("target", e);
             }
         }
-        if self.site_type == crate::domain::site::SiteType::Static && self.static_root.trim().is_empty()
+        if self.site_type == crate::domain::site::SiteType::Static
+            && self.static_root.trim().is_empty()
         {
             self.set_error("static_root", "静态目录不能为空".into());
         }
@@ -1320,7 +1330,11 @@ impl SiteEditState {
 
     /// 保存成功后把当前编辑态与已落盘内容重新对齐，避免连续保存触发旧 mtime 校验，
     /// 同时让原始模式内容与 Ctrl+D 快照都更新到最新版本。
-    pub fn mark_saved(&mut self, saved_content: &str, mtime_at_save: Option<std::time::SystemTime>) {
+    pub fn mark_saved(
+        &mut self,
+        saved_content: &str,
+        mtime_at_save: Option<std::time::SystemTime>,
+    ) {
         self.raw_lines = saved_content.lines().map(String::from).collect();
         if saved_content.ends_with('\n') {
             self.raw_lines.push(String::new());
@@ -1996,6 +2010,36 @@ impl AppState {
                     }
                 }
             }
+            AppEvent::CertDeleteResult { cert_name, result } => match *result {
+                Ok(out) => {
+                    self.certs.delete_in_flight = None;
+                    self.certs
+                        .push_output([format!("── 删除证书 {} ──", cert_name)]);
+                    self.certs.push_output(out.lines().map(String::from));
+                    if self.certs.pending_delete.is_empty() {
+                        self.certs.running = None;
+                        self.notification =
+                            Some(Notification::success(format!("证书 {} 已删除", cert_name)));
+                        self.certs.pending_refresh = true;
+                    } else {
+                        self.notification = Some(Notification::info(format!(
+                            "证书 {} 已删除，继续处理剩余 {} 个",
+                            cert_name,
+                            self.certs.pending_delete.len()
+                        )));
+                    }
+                }
+                Err(e) => {
+                    self.certs.running = None;
+                    self.certs.delete_in_flight = None;
+                    self.certs.pending_delete.clear();
+                    self.certs
+                        .push_output([format!("── 删除证书 {} 失败 ──", cert_name)]);
+                    self.certs
+                        .push_output(e.to_string().lines().map(String::from));
+                    self.notification = Some(Notification::failure(format!("删除证书失败：{}", e)));
+                }
+            },
             AppEvent::BackupListLoaded(b) => {
                 self.backup.refreshing = false;
                 self.backup.last_refresh = Some(Instant::now());
@@ -2465,6 +2509,18 @@ impl AppState {
                 }
                 self.certs.pending_install_hook = true;
                 self.certs.running = Some(crate::app::state::CertsAction::InstallDeployHook);
+            }
+            ModalAction::DeleteOrphanCerts { cert_names } => {
+                if self.run_mode.is_readonly() {
+                    self.notification = Some(Notification::failure(
+                        "当前为只读模式，需要 root 权限执行此操作".to_string(),
+                    ));
+                    return;
+                }
+                if !cert_names.is_empty() {
+                    self.certs.pending_delete = cert_names.into_iter().collect();
+                    self.certs.running = Some(crate::app::state::CertsAction::DeleteOrphan);
+                }
             }
             ModalAction::DiscardSiteForm => {
                 self.site_form = SiteFormState::default();
@@ -3204,8 +3260,7 @@ impl AppState {
                     );
                     if let Some(snippet) = snippets.get(self.site_edit.template_index) {
                         self.site_edit.replace_with_snippet(snippet.content);
-                        self.notification =
-                            Some(Notification::success("已替换槽位".to_string()));
+                        self.notification = Some(Notification::success("已替换槽位".to_string()));
                     }
                     return;
                 }
@@ -3924,8 +3979,7 @@ impl AppState {
                         self.logs.scroll_horizontal(-LOGS_HORIZONTAL_SCROLL_STEP);
                     }
                     KeyCode::Right | KeyCode::Char('l') => {
-                        self.logs
-                            .scroll_horizontal(LOGS_HORIZONTAL_SCROLL_STEP);
+                        self.logs.scroll_horizontal(LOGS_HORIZONTAL_SCROLL_STEP);
                     }
                     _ => {}
                 },
@@ -4087,6 +4141,68 @@ impl AppState {
                 }
                 self.modal = Some(crate::ui::modal::Modal::confirm_install_deploy_hook());
             }
+            CertsAction::DeleteOrphan => {
+                if self.run_mode.is_readonly() {
+                    self.notification = Some(Notification::failure(
+                        "当前为只读模式，需要 root 权限执行此操作".to_string(),
+                    ));
+                    return;
+                }
+                if !self.ctx.deps().certbot {
+                    self.notification = Some(Notification::failure("certbot 未安装".to_string()));
+                    return;
+                }
+                let safe_orphans: Vec<_> = self
+                    .certs
+                    .list
+                    .iter()
+                    .filter(|item| item.orphan && !item.nginx_referenced)
+                    .collect();
+                let referenced_orphans: Vec<_> = self
+                    .certs
+                    .list
+                    .iter()
+                    .filter(|item| item.orphan && item.nginx_referenced)
+                    .collect();
+                if safe_orphans.is_empty() {
+                    let msg = if referenced_orphans.is_empty() {
+                        "当前没有可清理的孤立证书"
+                    } else {
+                        "孤立证书仍被 nginx 配置引用，已跳过"
+                    };
+                    self.notification = Some(Notification::info(msg.to_string()));
+                    return;
+                }
+                let cert_names: Vec<String> =
+                    safe_orphans.iter().map(|c| c.cert.name.clone()).collect();
+                let mut lines = vec![
+                    format!(
+                        "发现 {} 个可安全清理的孤立证书（未关联站点且未被 nginx 引用）：",
+                        safe_orphans.len()
+                    ),
+                    cert_names.join(", "),
+                ];
+                if !referenced_orphans.is_empty() {
+                    let skipped = referenced_orphans
+                        .iter()
+                        .map(|c| c.cert.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    lines.push(format!("已跳过仍被 nginx 引用的孤立证书：{}", skipped));
+                }
+                lines.extend([
+                    "".into(),
+                    "将逐个执行 certbot delete 删除这些证书。".into(),
+                    "⚠️  此操作不可撤销！".into(),
+                ]);
+                let modal = Modal::confirm(
+                    "🗑️  清理孤立证书",
+                    lines,
+                    "确认删除",
+                    crate::ui::modal::ModalAction::DeleteOrphanCerts { cert_names },
+                );
+                self.modal = Some(modal);
+            }
         }
     }
 
@@ -4149,6 +4265,16 @@ impl AppState {
         } else {
             false
         }
+    }
+
+    /// 主循环消费：取出证书删除请求。
+    pub fn take_cert_delete(&mut self) -> Option<String> {
+        if self.certs.delete_in_flight.is_some() {
+            return None;
+        }
+        let cert_name = self.certs.pending_delete.pop_front()?;
+        self.certs.delete_in_flight = Some(cert_name.clone());
+        Some(cert_name)
     }
 
     /// 主循环消费：取出备份页刷新意图。
