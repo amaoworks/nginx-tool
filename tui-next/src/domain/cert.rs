@@ -316,7 +316,7 @@ fn collect_ssl_certificate_refs(nginx_root: &Path) -> HashSet<String> {
     let mut refs = HashSet::new();
     let re = regex::Regex::new(r"\bssl_certificate\s+([^;#\s]+)").unwrap();
     for entry in walkdir::WalkDir::new(nginx_root)
-        .follow_links(false)
+        .follow_links(true)  // 必须跟随软链接，否则无法读取 sites-enabled 下的配置
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
