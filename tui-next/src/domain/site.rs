@@ -558,18 +558,17 @@ pub enum CreateSiteOutcome {
     CertFailed { error: String },
 }
 
-/// 新建站点：渲染模板 → 写入配置 → 可选启用 → 可选证书申请。
-/// 任一步失败按反向次序回滚。详见 design.md 子模式 B 创建流程。
-pub async fn create_site(
-    ctx: Arc<AppContext>,
-    input: CreateSiteInput,
-) -> Result<CreateSiteOutcome, NgToolError> {
-    let started = Instant::now();
-    let conf_name = format!("{}.conf", input.name);
-    let avail_path = ctx.probe.sites_available.join(&conf_name);
-    let link_path = ctx.probe.sites_enabled.join(&conf_name);
+fn cert_paths_for_name(cert_name: &str) -> (String, String) {
+    (
+        format!("/etc/letsencrypt/live/{}/fullchain.pem", cert_name),
+        format!("/etc/letsencrypt/live/{}/privkey.pem", cert_name),
+    )
+}
 
-    // 渲染模板
+fn render_create_site_config(
+    input: &CreateSiteInput,
+    ssl: Option<(&str, &str)>,
+) -> Result<String, NgToolError> {
     let params = crate::template::renderer::RenderParams {
         site_name: input.name.clone(),
         domain_name: input.domain.clone(),
@@ -585,10 +584,28 @@ pub async fn create_site(
         feature_spa_mode: input.feature_spa_mode,
         feature_static_cache: input.feature_static_cache,
         feature_block_sensitive: input.feature_block_sensitive,
+        ssl_enabled: ssl.is_some(),
+        ssl_cert_path: ssl.map(|(cert, _)| cert.to_string()).unwrap_or_default(),
+        ssl_key_path: ssl.map(|(_, key)| key.to_string()).unwrap_or_default(),
         ..Default::default()
     };
-    let content = crate::template::renderer::render(input.kind, &params)
-        .map_err(|e| NgToolError::TemplateFailed { message: e })?;
+    crate::template::renderer::render(input.kind, &params)
+        .map_err(|e| NgToolError::TemplateFailed { message: e })
+}
+
+/// 新建站点：渲染模板 → 写入配置 → 可选启用 → 可选证书申请。
+/// 任一步失败按反向次序回滚。详见 design.md 子模式 B 创建流程。
+pub async fn create_site(
+    ctx: Arc<AppContext>,
+    input: CreateSiteInput,
+) -> Result<CreateSiteOutcome, NgToolError> {
+    let started = Instant::now();
+    let conf_name = format!("{}.conf", input.name);
+    let avail_path = ctx.probe.sites_available.join(&conf_name);
+    let link_path = ctx.probe.sites_enabled.join(&conf_name);
+
+    // 渲染模板
+    let content = render_create_site_config(&input, None)?;
 
     // 写入：tmp 文件落在 sites-available 同目录（保证 hard_link 在同一文件系统）
     // 用 O_CREAT|O_EXCL 创建 tmp（防 tmp race），用 hard_link 替代 rename 做 race-safe 创建：
@@ -730,7 +747,11 @@ pub async fn create_site(
         cert_requested = true;
         let cert_domains = cert_domains_for_input(&input);
         let mut cert_cmd = crate::infra::certbot::apply_registration_args(
-            CommandSpec::new("certbot").arg("--nginx"),
+            CommandSpec::new("certbot")
+                .arg("certonly")
+                .arg("--nginx")
+                .arg("--cert-name")
+                .arg(&input.name),
             &certbot.email,
             certbot.allow_unsafe_without_email,
         );
@@ -743,7 +764,32 @@ pub async fn create_site(
             .await;
 
         match cert_result {
-            Ok(_) => {
+            Ok(out) if out.ok() => {
+                let (cert_path, key_path) = cert_paths_for_name(&input.name);
+                let ssl_content =
+                    match render_create_site_config(&input, Some((&cert_path, &key_path))) {
+                        Ok(content) => content,
+                        Err(e) => {
+                            return Ok(CreateSiteOutcome::CertFailed {
+                                error: format!("证书已签发，但渲染 SSL 配置失败：{}", e),
+                            });
+                        }
+                    };
+                if let Err(e) =
+                    replace_site_config_checked(&ctx, &input.name, ssl_content.as_bytes()).await
+                {
+                    log_audit(
+                        &ctx,
+                        "site.ssl.apply",
+                        &input.name,
+                        AuditResult::Failure,
+                        started,
+                        json!({"cert_name": input.name, "error": e.to_string()}),
+                    );
+                    return Ok(CreateSiteOutcome::CertFailed {
+                        error: format!("证书已签发，但写入 SSL 配置失败：{}", e),
+                    });
+                }
                 log_audit(
                     &ctx,
                     "cert.request",
@@ -752,6 +798,26 @@ pub async fn create_site(
                     started,
                     json!({"domains": cert_domains}),
                 );
+            }
+            Ok(out) => {
+                let combined = out.combined();
+                log_audit(
+                    &ctx,
+                    "cert.request",
+                    &input.name,
+                    AuditResult::Failure,
+                    started,
+                    json!({"domains": cert_domains, "exit": out.code()}),
+                );
+                log_audit(
+                    &ctx,
+                    "site.create",
+                    &input.name,
+                    AuditResult::Success,
+                    started,
+                    json!({"cert": "failed"}),
+                );
+                return Ok(CreateSiteOutcome::CertFailed { error: combined });
             }
             Err(e) => {
                 // 证书失败不回滚站点
@@ -787,6 +853,172 @@ pub async fn create_site(
         json!({"enable": input.enable_now, "cert": cert_requested}),
     );
     Ok(CreateSiteOutcome::Ok { cert_requested })
+}
+
+async fn replace_site_config_checked(
+    ctx: &AppContext,
+    site_name: &str,
+    bytes: &[u8],
+) -> Result<(), NgToolError> {
+    let conf_name = format!("{}.conf", site_name);
+    let target_path = ctx.probe.sites_available.join(&conf_name);
+    let original =
+        tokio::fs::read(&target_path)
+            .await
+            .map_err(|e| NgToolError::FileOperationFailed {
+                path: target_path.clone(),
+                message: format!("读取原配置失败：{}", e),
+            })?;
+
+    atomic_replace(ctx, site_name, &target_path, bytes).await?;
+
+    if let Err(e) = ctx.nginx.test_config().await {
+        let _ = atomic_replace(ctx, site_name, &target_path, &original).await;
+        let _ = ctx.nginx.test_config().await;
+        return Err(e);
+    }
+
+    if let Err(e) = ctx.systemd.reload("nginx").await {
+        let _ = atomic_replace(ctx, site_name, &target_path, &original).await;
+        let _ = ctx.nginx.test_config().await;
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+pub async fn apply_cert_to_site_config(
+    ctx: Arc<AppContext>,
+    site_name: &str,
+    cert_name: &str,
+) -> Result<(), NgToolError> {
+    let started = Instant::now();
+    let conf_name = format!("{}.conf", site_name);
+    let target_path = ctx.probe.sites_available.join(&conf_name);
+    let original = tokio::fs::read_to_string(&target_path).await.map_err(|e| {
+        NgToolError::FileOperationFailed {
+            path: target_path.clone(),
+            message: format!("读取原配置失败：{}", e),
+        }
+    })?;
+
+    let parsed = crate::template::config_parser::parse_for_edit(&original);
+    let Some(managed_type) = parsed.managed_type else {
+        return Err(NgToolError::InvalidInput {
+            field: "site_config".into(),
+            message: "仅支持自动更新由 nginx-tools 管理的站点配置".into(),
+        });
+    };
+    if !parsed.markers_intact {
+        return Err(NgToolError::InvalidInput {
+            field: "site_config".into(),
+            message: "站点注入槽标记不完整，无法安全自动写入 SSL 配置".into(),
+        });
+    }
+    let kind = match managed_type {
+        SiteType::Emby => crate::template::renderer::SiteKind::Emby,
+        SiteType::Static => crate::template::renderer::SiteKind::Static,
+        SiteType::Proxy | SiteType::Unknown => crate::template::renderer::SiteKind::Proxy,
+    };
+    let site_type = managed_type;
+    let feature_enabled = |name: &str| parsed.managed_features.iter().any(|item| item == name);
+    let (cert_path, key_path) = cert_paths_for_name(cert_name);
+    let params = crate::template::renderer::RenderParams {
+        site_name: site_name.to_string(),
+        domain_name: parsed.domains.first().cloned().unwrap_or_default(),
+        domain_aliases: parsed
+            .domains
+            .iter()
+            .skip(1)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" "),
+        upstream_scheme: parsed.upstream_scheme.unwrap_or_else(|| "http".into()),
+        upstream_target: parsed.upstream_target.unwrap_or_default(),
+        static_root: parsed.static_root.unwrap_or_default(),
+        feature_streaming: site_type == SiteType::Proxy && feature_enabled("streaming"),
+        feature_websocket: (site_type == SiteType::Proxy && feature_enabled("websocket"))
+            || site_type == SiteType::Emby,
+        feature_large_body: (site_type == SiteType::Proxy && feature_enabled("large_body"))
+            || site_type == SiteType::Emby,
+        feature_cors: site_type == SiteType::Proxy && feature_enabled("cors"),
+        feature_long_timeout: (site_type == SiteType::Proxy && feature_enabled("long_timeout"))
+            || site_type == SiteType::Emby,
+        feature_spa_mode: site_type == SiteType::Static && feature_enabled("spa_mode"),
+        feature_static_cache: site_type == SiteType::Static && feature_enabled("static_cache"),
+        feature_block_sensitive: site_type == SiteType::Static
+            && feature_enabled("block_sensitive"),
+        custom_before_location: parsed
+            .injection_slots
+            .get(&crate::template::config_parser::InjectionSlot::BeforeLocation)
+            .cloned()
+            .unwrap_or_default(),
+        custom_inside_location: parsed
+            .injection_slots
+            .get(&crate::template::config_parser::InjectionSlot::InsideLocation)
+            .cloned()
+            .unwrap_or_default(),
+        custom_after_location: parsed
+            .injection_slots
+            .get(&crate::template::config_parser::InjectionSlot::AfterLocation)
+            .cloned()
+            .unwrap_or_default(),
+        ssl_enabled: true,
+        ssl_cert_path: cert_path,
+        ssl_key_path: key_path,
+        ..Default::default()
+    };
+
+    let content = crate::template::renderer::render(kind, &params)
+        .map_err(|e| NgToolError::TemplateFailed { message: e })?;
+    match replace_site_config_checked(&ctx, site_name, content.as_bytes()).await {
+        Ok(()) => {
+            log_audit(
+                &ctx,
+                "site.ssl.apply",
+                site_name,
+                AuditResult::Success,
+                started,
+                json!({"cert_name": cert_name}),
+            );
+            Ok(())
+        }
+        Err(e) => {
+            log_audit(
+                &ctx,
+                "site.ssl.apply",
+                site_name,
+                AuditResult::Failure,
+                started,
+                json!({"cert_name": cert_name, "error": e.to_string()}),
+            );
+            Err(e)
+        }
+    }
+}
+
+pub fn validate_managed_site_for_ssl(ctx: &AppContext, site_name: &str) -> Result<(), NgToolError> {
+    let conf_name = format!("{}.conf", site_name);
+    let target_path = ctx.probe.sites_available.join(&conf_name);
+    let original =
+        std::fs::read_to_string(&target_path).map_err(|e| NgToolError::FileOperationFailed {
+            path: target_path.clone(),
+            message: format!("读取原配置失败：{}", e),
+        })?;
+    let parsed = crate::template::config_parser::parse_for_edit(&original);
+    if parsed.managed_type.is_none() {
+        return Err(NgToolError::InvalidInput {
+            field: "site_config".into(),
+            message: "仅支持为由 nginx-tools 管理的站点自动写入 SSL 配置".into(),
+        });
+    }
+    if !parsed.markers_intact {
+        return Err(NgToolError::InvalidInput {
+            field: "site_config".into(),
+            message: "站点注入槽标记不完整，无法安全自动写入 SSL 配置".into(),
+        });
+    }
+    Ok(())
 }
 
 fn cert_domains_for_input(input: &CreateSiteInput) -> Vec<String> {

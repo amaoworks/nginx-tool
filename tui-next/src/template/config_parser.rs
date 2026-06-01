@@ -72,6 +72,10 @@ pub struct ParsedForEdit {
     pub managed_type: Option<crate::domain::site::SiteType>,
     /// 托管特性集合
     pub managed_features: Vec<String>,
+    /// SSL 证书路径
+    pub ssl_cert_path: Option<String>,
+    /// SSL 私钥路径
+    pub ssl_key_path: Option<String>,
     /// 注入槽内容
     pub injection_slots: HashMap<InjectionSlot, String>,
     /// 注入槽标记是否完整
@@ -103,6 +107,7 @@ pub fn parse_for_edit(content: &str) -> ParsedForEdit {
     // 提取注入槽内容
     let (injection_slots, markers_intact) = extract_injection_slots(content);
     let (managed_type, managed_features) = extract_managed_metadata(content);
+    let (ssl_cert_path, ssl_key_path) = extract_ssl_certificate_paths(content);
 
     ParsedForEdit {
         raw_content: content.to_string(),
@@ -113,9 +118,42 @@ pub fn parse_for_edit(content: &str) -> ParsedForEdit {
         static_root: parsed.static_root,
         managed_type,
         managed_features,
+        ssl_cert_path,
+        ssl_key_path,
         injection_slots,
         markers_intact,
     }
+}
+
+fn extract_ssl_certificate_paths(content: &str) -> (Option<String>, Option<String>) {
+    let mut cert_path = None;
+    let mut key_path = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if cert_path.is_none() {
+            if let Some(value) = trimmed.strip_prefix("ssl_certificate ") {
+                cert_path = value
+                    .split(';')
+                    .next()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+            }
+        }
+        if key_path.is_none() {
+            if let Some(value) = trimmed.strip_prefix("ssl_certificate_key ") {
+                key_path = value
+                    .split(';')
+                    .next()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+            }
+        }
+    }
+
+    (cert_path, key_path)
 }
 
 fn extract_managed_metadata(content: &str) -> (Option<crate::domain::site::SiteType>, Vec<String>) {
@@ -131,6 +169,9 @@ fn extract_managed_metadata(content: &str) -> (Option<crate::domain::site::SiteT
                 "static" => Some(crate::domain::site::SiteType::Static),
                 _ => None,
             };
+        }
+        if trimmed == "# nginx-tools:tool-marker: type=emby" {
+            managed_type = Some(crate::domain::site::SiteType::Emby);
         }
         if let Some(value) = trimmed.strip_prefix("# nginx-tools:features=") {
             features = value
@@ -217,7 +258,9 @@ pub fn extract_ssl_config(content: &str) -> Vec<String> {
             // 只在 server 块的第一层提取 SSL 指令
             if brace_depth == 1 {
                 // 提取 SSL 相关指令
-                if trimmed.starts_with("listen") && trimmed.contains("443") && trimmed.contains("ssl")
+                if trimmed.starts_with("listen")
+                    && trimmed.contains("443")
+                    && trimmed.contains("ssl")
                     || trimmed.starts_with("ssl_certificate ")
                     || trimmed.starts_with("ssl_certificate_key ")
                     || trimmed.starts_with("ssl_protocols ")
@@ -271,7 +314,11 @@ pub fn inject_ssl_config(rendered: &str, ssl_lines: &[String]) -> String {
             brace_depth -= trimmed.matches('}').count() as i32;
 
             // 在第一个 listen 80 指令后注入 SSL 配置
-            if !ssl_injected && brace_depth == 1 && trimmed.starts_with("listen") && trimmed.contains("80") {
+            if !ssl_injected
+                && brace_depth == 1
+                && trimmed.starts_with("listen")
+                && trimmed.contains("80")
+            {
                 result.push(line.to_string());
                 // 注入 SSL 配置
                 for ssl_line in ssl_lines {
@@ -435,6 +482,27 @@ server {
     }
 
     #[test]
+    fn parse_for_edit_extracts_ssl_certificate_paths() {
+        let content = r#"
+server {
+    listen 443 ssl;
+    server_name app.example.com;
+    ssl_certificate /etc/letsencrypt/live/app/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/app/privkey.pem;
+}
+"#;
+        let edit = parse_for_edit(content);
+        assert_eq!(
+            edit.ssl_cert_path.as_deref(),
+            Some("/etc/letsencrypt/live/app/fullchain.pem")
+        );
+        assert_eq!(
+            edit.ssl_key_path.as_deref(),
+            Some("/etc/letsencrypt/live/app/privkey.pem")
+        );
+    }
+
+    #[test]
     fn inject_ssl_config_adds_ssl_after_listen_80() {
         let rendered = r#"server {
     listen 80;
@@ -447,7 +515,8 @@ server {
         let ssl_lines = vec![
             "    listen 443 ssl;".to_string(),
             "    ssl_certificate /etc/letsencrypt/live/app.example.com/fullchain.pem;".to_string(),
-            "    ssl_certificate_key /etc/letsencrypt/live/app.example.com/privkey.pem;".to_string(),
+            "    ssl_certificate_key /etc/letsencrypt/live/app.example.com/privkey.pem;"
+                .to_string(),
         ];
 
         let result = inject_ssl_config(rendered, &ssl_lines);

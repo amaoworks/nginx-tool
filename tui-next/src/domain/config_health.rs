@@ -292,16 +292,12 @@ fn add_http_redirect(content: &str, domain: &str) -> Result<String, String> {
         r#"
 
 server {{
-    if ($host = {}) {{
-        return 301 https://$host$request_uri;
-    }}
-
     listen 80;
     server_name {};
-    return 404;
+    return 301 https://$host$request_uri;
 }}
 "#,
-        domain, domain
+        domain
     );
 
     Ok(format!("{}{}", content, redirect_block))

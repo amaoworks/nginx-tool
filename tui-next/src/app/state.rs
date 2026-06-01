@@ -918,6 +918,12 @@ pub struct SiteEditState {
     pub feature_static_cache: bool,
     /// 静态站点：敏感路径保护
     pub feature_block_sensitive: bool,
+    /// 是否保留 SSL 模板配置
+    pub ssl_enabled: bool,
+    /// SSL 证书路径
+    pub ssl_cert_path: String,
+    /// SSL 私钥路径
+    pub ssl_key_path: String,
     /// 注入槽内容
     pub injection_slots:
         std::collections::HashMap<crate::template::config_parser::InjectionSlot, String>,
@@ -1012,6 +1018,9 @@ impl Default for SiteEditState {
             feature_spa_mode: false,
             feature_static_cache: true,
             feature_block_sensitive: false,
+            ssl_enabled: false,
+            ssl_cert_path: String::new(),
+            ssl_key_path: String::new(),
             injection_slots: std::collections::HashMap::new(),
             current_slot: crate::template::config_parser::InjectionSlot::BeforeLocation,
             markers_intact: true,
@@ -1086,6 +1095,9 @@ impl SiteEditState {
             },
             feature_block_sensitive: site_type == crate::domain::site::SiteType::Static
                 && feature_enabled("block_sensitive"),
+            ssl_enabled: parsed.ssl_cert_path.is_some() && parsed.ssl_key_path.is_some(),
+            ssl_cert_path: parsed.ssl_cert_path.clone().unwrap_or_default(),
+            ssl_key_path: parsed.ssl_key_path.clone().unwrap_or_default(),
             injection_slots: parsed.injection_slots.clone(),
             markers_intact: parsed.markers_intact,
             raw_lines,
@@ -1195,9 +1207,9 @@ impl SiteEditState {
                 .get(&crate::template::config_parser::InjectionSlot::AfterLocation)
                 .cloned()
                 .unwrap_or_default(),
-            ssl_enabled: false,
-            ssl_cert_path: String::new(),
-            ssl_key_path: String::new(),
+            ssl_enabled: self.ssl_enabled,
+            ssl_cert_path: self.ssl_cert_path.clone(),
+            ssl_key_path: self.ssl_key_path.clone(),
         }
     }
 
@@ -3745,7 +3757,7 @@ impl AppState {
         // 从原始配置中提取 SSL 配置并注入到新渲染的配置中
         let original_content = &self.site_edit.raw_lines.join("\n");
         let ssl_lines = crate::template::config_parser::extract_ssl_config(original_content);
-        if !ssl_lines.is_empty() {
+        if !params.ssl_enabled && !ssl_lines.is_empty() {
             content = crate::template::config_parser::inject_ssl_config(&content, &ssl_lines);
         }
 
@@ -4098,7 +4110,7 @@ impl AppState {
                         format!("站点: {}", site.name),
                         format!("域名: {}", site.all_domains.join(", ")),
                         "".into(),
-                        "将使用 certbot --nginx 一次性申请上述域名。".into(),
+                        "将使用 certbot certonly 签发证书，并由 ngtool 写入 SSL 配置。".into(),
                     ],
                     "确认申请",
                     crate::ui::modal::ModalAction::RequestCertForSite {
@@ -4638,6 +4650,39 @@ server {
         let params = s.build_render_params();
         assert_eq!(params.domain_name, "app.example.com");
         assert_eq!(params.domain_aliases, "", "渲染参数中的附加域名也应该为空");
+    }
+
+    #[test]
+    fn site_edit_preserves_ssl_template_params() {
+        let parsed = crate::template::config_parser::parse_for_edit(
+            r#"
+server {
+    listen 443 ssl;
+    server_name app.example.com;
+    # nginx-tools:managed type=proxy
+    ssl_certificate /etc/letsencrypt/live/app/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/app/privkey.pem;
+
+    # nginx-tools:custom-before-location:start
+    # nginx-tools:custom-before-location:end
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        # nginx-tools:custom-inside-location:start
+        # nginx-tools:custom-inside-location:end
+    }
+    # nginx-tools:custom-after-location:start
+    # nginx-tools:custom-after-location:end
+}
+"#,
+        );
+        let state = SiteEditState::from_parsed("app", &parsed);
+        let params = state.build_render_params();
+        assert!(params.ssl_enabled);
+        assert_eq!(
+            params.ssl_cert_path,
+            "/etc/letsencrypt/live/app/fullchain.pem"
+        );
+        assert_eq!(params.ssl_key_path, "/etc/letsencrypt/live/app/privkey.pem");
     }
 
     #[test]

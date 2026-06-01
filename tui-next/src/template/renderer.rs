@@ -318,6 +318,26 @@ mod tests {
     }
 
     #[test]
+    fn render_proxy_ssl_redirect_includes_aliases() {
+        let params = RenderParams {
+            site_name: "app".into(),
+            domain_name: "app.example.com".into(),
+            domain_aliases: "www.app.example.com".into(),
+            upstream_scheme: "http".into(),
+            upstream_target: "127.0.0.1:8080".into(),
+            ssl_enabled: true,
+            ssl_cert_path: "/etc/letsencrypt/live/app/fullchain.pem".into(),
+            ssl_key_path: "/etc/letsencrypt/live/app/privkey.pem".into(),
+            ..Default::default()
+        };
+        let out = render(SiteKind::Proxy, &params).unwrap();
+        assert!(out.contains("listen 443 ssl;"));
+        assert!(out.contains("server_name app.example.com www.app.example.com;"));
+        assert!(out.contains("return 301 https://$host$request_uri;"));
+        assert!(!out.contains("return 404;"));
+    }
+
+    #[test]
     fn render_proxy_without_aliases() {
         let params = RenderParams {
             site_name: "app".into(),

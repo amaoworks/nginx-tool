@@ -55,12 +55,8 @@ server {
 {% if ssl_enabled == "true" %}
 
 server {
-    if ($host = {{ domain_name }}) {
-        return 301 https://$host$request_uri;
-    }
-
     listen 80;
     server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
-    return 404;
+    return 301 https://$host$request_uri;
 }
 {% endif %}

@@ -316,7 +316,7 @@ fn collect_ssl_certificate_refs(nginx_root: &Path) -> HashSet<String> {
     let mut refs = HashSet::new();
     let re = regex::Regex::new(r"\bssl_certificate\s+([^;#\s]+)").unwrap();
     for entry in walkdir::WalkDir::new(nginx_root)
-        .follow_links(true)  // 必须跟随软链接，否则无法读取 sites-enabled 下的配置
+        .follow_links(true) // 必须跟随软链接，否则无法读取 sites-enabled 下的配置
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
@@ -365,7 +365,7 @@ fn letsencrypt_live_name(path: &str) -> Option<&str> {
     parts.get(live_pos + 1).copied()
 }
 
-/// 按域名集合申请证书。`certbot --nginx -d <d1> -d <d2> ...`
+/// 按域名集合申请证书。`certbot certonly --nginx -d <d1> -d <d2> ...`
 /// 长任务由主循环异步派发，本函数自身阻塞至 certbot 返回。
 pub async fn request_cert(
     ctx: Arc<AppContext>,
@@ -391,8 +391,13 @@ pub async fn request_cert(
             message: "未配置 certbot 邮箱，且未允许无邮箱注册".into(),
         });
     }
+    crate::domain::site::validate_managed_site_for_ssl(&ctx, site_name)?;
     let mut spec = crate::infra::certbot::apply_registration_args(
-        CommandSpec::new("certbot").arg("--nginx"),
+        CommandSpec::new("certbot")
+            .arg("certonly")
+            .arg("--nginx")
+            .arg("--cert-name")
+            .arg(site_name),
         &certbot.email,
         certbot.allow_unsafe_without_email,
     )
@@ -413,11 +418,13 @@ pub async fn request_cert(
                     json!({"domains": domains, "exit": out.code()}),
                 );
                 return Err(NgToolError::CommandFailed {
-                    command: "certbot --nginx".into(),
+                    command: "certbot certonly --nginx".into(),
                     code: out.code(),
                     stderr: combined,
                 });
             }
+            crate::domain::site::apply_cert_to_site_config(ctx.clone(), site_name, site_name)
+                .await?;
             ctx.audit.log(
                 "cert.request",
                 site_name,
