@@ -70,6 +70,7 @@ mod tests {
         assert!(matches!(first, LockState::Acquired(_)));
         let second = SingleInstanceLock::try_acquire(&lock).unwrap();
         assert!(matches!(second, LockState::Busy));
+        drop(second);
         drop(first);
         // 第一把释放后第二次可再次获取
         let third = SingleInstanceLock::try_acquire(&lock).unwrap();

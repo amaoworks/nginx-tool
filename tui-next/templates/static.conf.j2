@@ -1,5 +1,4 @@
 server {
-    listen 80;
     server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
     # nginx-tools:managed type=static
     # nginx-tools:features={% if feature_spa_mode == "true" %}spa_mode,{% endif %}{% if feature_static_cache == "true" %}static_cache,{% endif %}{% if feature_block_sensitive == "true" %}block_sensitive,{% endif %}
@@ -41,4 +40,27 @@ server {
     # nginx-tools:custom-after-location:start
     {{ custom_after_location | safe }}
     # nginx-tools:custom-after-location:end
+{% if ssl_enabled == "true" %}
+
+    listen 443 ssl;
+    ssl_certificate {{ ssl_cert_path }};
+    ssl_certificate_key {{ ssl_key_path }};
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+{% else %}
+
+    listen 80;
+{% endif %}
 }
+{% if ssl_enabled == "true" %}
+
+server {
+    if ($host = {{ domain_name }}) {
+        return 301 https://$host$request_uri;
+    }
+
+    listen 80;
+    server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
+    return 404;
+}
+{% endif %}

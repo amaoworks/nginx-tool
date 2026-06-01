@@ -1195,6 +1195,9 @@ impl SiteEditState {
                 .get(&crate::template::config_parser::InjectionSlot::AfterLocation)
                 .cloned()
                 .unwrap_or_default(),
+            ssl_enabled: false,
+            ssl_cert_path: String::new(),
+            ssl_key_path: String::new(),
         }
     }
 

@@ -1,5 +1,4 @@
 server {
-    listen 80;
     server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
     # nginx-tools:managed type=proxy
     # nginx-tools:features={% if feature_streaming == "true" %}streaming,{% endif %}{% if feature_websocket == "true" %}websocket,{% endif %}{% if feature_large_body == "true" %}large_body,{% endif %}{% if feature_cors == "true" %}cors,{% endif %}{% if feature_long_timeout == "true" %}long_timeout,{% endif %}
@@ -54,4 +53,27 @@ server {
     # nginx-tools:custom-after-location:start
     {{ custom_after_location | safe }}
     # nginx-tools:custom-after-location:end
+{% if ssl_enabled == "true" %}
+
+    listen 443 ssl;
+    ssl_certificate {{ ssl_cert_path }};
+    ssl_certificate_key {{ ssl_key_path }};
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+{% else %}
+
+    listen 80;
+{% endif %}
 }
+{% if ssl_enabled == "true" %}
+
+server {
+    if ($host = {{ domain_name }}) {
+        return 301 https://$host$request_uri;
+    }
+
+    listen 80;
+    server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
+    return 404;
+}
+{% endif %}

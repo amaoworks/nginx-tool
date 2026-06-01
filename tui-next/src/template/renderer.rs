@@ -52,6 +52,12 @@ pub struct RenderParams {
     pub custom_inside_location: String,
     /// server 块末尾注入槽内容
     pub custom_after_location: String,
+    /// 是否启用 SSL
+    pub ssl_enabled: bool,
+    /// SSL 证书路径
+    pub ssl_cert_path: String,
+    /// SSL 私钥路径
+    pub ssl_key_path: String,
 }
 
 impl Default for RenderParams {
@@ -74,6 +80,9 @@ impl Default for RenderParams {
             custom_before_location: String::new(),
             custom_inside_location: String::new(),
             custom_after_location: String::new(),
+            ssl_enabled: false,
+            ssl_cert_path: String::new(),
+            ssl_key_path: String::new(),
         }
     }
 }
@@ -150,6 +159,9 @@ pub fn render(kind: SiteKind, params: &RenderParams) -> Result<String, String> {
                 params.custom_after_location.clone()
             },
         ),
+        ("ssl_enabled", params.ssl_enabled.to_string()),
+        ("ssl_cert_path", params.ssl_cert_path.clone()),
+        ("ssl_key_path", params.ssl_key_path.clone()),
     ]);
 
     template
