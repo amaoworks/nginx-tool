@@ -1552,7 +1552,7 @@ impl AppState {
                 self.toggle_site_edit_scheme();
             }
             EditFocus::StaticMode => {
-                self.site_edit.feature_spa_mode = if forward { true } else { false };
+                self.site_edit.feature_spa_mode = forward;
                 self.site_edit.dirty = true;
             }
             EditFocus::ProxyFeatureStreaming
@@ -3213,17 +3213,14 @@ impl AppState {
                 EditFocus::Scheme => {
                     if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ')) {
                         self.toggle_site_edit_scheme();
-                        return;
                     }
                     if matches!(k.code, KeyCode::Char('h')) {
                         self.site_edit.upstream_scheme = "http".into();
                         self.site_edit.dirty = true;
-                        return;
                     }
                     if matches!(k.code, KeyCode::Char('s')) {
                         self.site_edit.upstream_scheme = "https".into();
                         self.site_edit.dirty = true;
-                        return;
                     }
                 }
                 EditFocus::ProxyFeatureStreaming
@@ -3235,14 +3232,12 @@ impl AppState {
                 | EditFocus::StaticFeatureBlockSensitive => {
                     if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ')) {
                         self.toggle_site_edit_current_flag();
-                        return;
                     }
                 }
                 EditFocus::StaticMode => {
                     if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ')) {
                         self.site_edit.feature_spa_mode = !self.site_edit.feature_spa_mode;
                         self.site_edit.dirty = true;
-                        return;
                     }
                 }
             }

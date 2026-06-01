@@ -7,9 +7,10 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::state::{AppState, CertsAction, CertsFocus};
+use crate::app::state::{AppState, CertsAction, CertsFocus, FocusArea};
 use crate::domain::cert::{CertLevel, CertWithSite};
 use crate::domain::site::Site;
+use crate::ui::focus;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -119,17 +120,22 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let rows = state.sites.list.iter().enumerate().map(|(i, s)| {
         let selected = i == state.certs.site_selector_index;
-        let row_style = if selected {
-            let style = Style::default()
+        let table_focused =
+            state.focus == FocusArea::Content && state.certs.focused == CertsFocus::Table;
+        let row_style = if selected && table_focused {
+            Style::default()
                 .bg(theme::BG_SELECTED)
-                .fg(theme::FG_SELECTED);
-            if state.certs.focused == CertsFocus::Table {
-                style.add_modifier(Modifier::BOLD)
-            } else {
-                style
-            }
+                .fg(theme::FG_SELECTED)
+                .add_modifier(Modifier::BOLD)
+        } else if selected {
+            focus::selected_text_style(false)
         } else {
             Style::default()
+        };
+        let site_name = if selected {
+            format!("▶ {}", s.name)
+        } else {
+            format!("  {}", s.name)
         };
 
         let certs = certs_for_site(state, s);
@@ -138,7 +144,7 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
         let domains = compact_domains(&s.all_domains);
 
         Row::new(vec![
-            Cell::from(s.name.clone()),
+            Cell::from(site_name),
             Cell::from(truncate(&domains, 28)),
             Cell::from(truncate(&cert_label, 20)),
             Cell::from(status_span),
@@ -230,30 +236,27 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
             && crate::domain::cert::cleanup_candidates(&state.certs.list).is_empty();
 
         let label = if busy {
-            format!("[ {}（执行中）]", action.label())
+            format!("{}（执行中）", action.label())
         } else if hook_ok {
-            "[ ✓ 钩子已就绪 ]".to_string()
+            "✓ 钩子已就绪".to_string()
         } else if no_cleanup_candidates {
-            "[ 无多余证书 ]".to_string()
+            "无多余证书".to_string()
         } else {
-            format!("[ {} ]", action.label())
+            action.label().to_string()
         };
         let style = if disabled || hook_ok || no_cleanup_candidates {
             Style::default()
                 .fg(theme::FG_DIM)
                 .add_modifier(Modifier::DIM)
         } else if focused {
-            Style::default()
-                .bg(theme::BG_SELECTED)
-                .fg(theme::FG_SELECTED)
-                .add_modifier(Modifier::BOLD)
+            focus::focused_button_style()
         } else {
             Style::default().fg(theme::FG_NORMAL)
         };
         let surrounded = if focused {
-            format!("[{}]", label)
+            format!("▶ {} ◀", label)
         } else {
-            label
+            format!("[ {} ]", label)
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(surrounded, style))),

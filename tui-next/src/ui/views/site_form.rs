@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::state::{AppState, FormField, SiteTypeChoice};
+use crate::ui::focus;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -279,27 +280,24 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         focused_line = lines.len();
     }
     let btn_label = if form.submitting {
-        "  创建中…  "
+        "创建中…"
     } else {
-        "   创  建   "
+        "创  建"
     };
     let btn_style = if submit_focused {
-        Style::default()
-            .bg(theme::BG_SELECTED)
-            .fg(theme::FG_SELECTED)
-            .add_modifier(Modifier::BOLD)
+        focus::focused_button_style()
     } else {
         Style::default().fg(theme::FG_NORMAL)
     };
     let surrounded = if submit_focused {
-        format!("[[{}]]", btn_label)
+        format!("▶ {} ◀", btn_label)
     } else {
         format!("[ {} ]", btn_label)
     };
-    lines.push(Line::from(Span::styled(
-        format!("          {}", surrounded),
-        btn_style,
-    )));
+    lines.push(Line::from(vec![
+        Span::raw("          "),
+        Span::styled(surrounded, btn_style),
+    ]));
 
     let scroll_offset = compute_scroll_offset(lines.len(), inner.height as usize, focused_line);
     let p = Paragraph::new(lines)

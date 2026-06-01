@@ -6,7 +6,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
-use crate::app::state::AppState;
+use crate::app::state::{AppState, FocusArea};
+use crate::ui::focus;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -89,16 +90,25 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let rows = state.backup.list.iter().enumerate().map(|(i, b)| {
         let selected = i == state.backup.selected;
-        let row_style = if selected {
+        let table_focused = state.focus == FocusArea::Content;
+        let row_style = if selected && table_focused {
             Style::default()
                 .bg(theme::BG_SELECTED)
                 .fg(theme::FG_SELECTED)
                 .add_modifier(Modifier::BOLD)
+        } else if selected {
+            focus::selected_text_style(false)
         } else {
             Style::default()
         };
 
-        let mark = if b.restorable() { " " } else { "⚠" };
+        let mark = if selected {
+            "▶"
+        } else if b.restorable() {
+            " "
+        } else {
+            "⚠"
+        };
         let mark_style = if b.restorable() {
             Style::default().fg(theme::FG_OK)
         } else {

@@ -101,14 +101,18 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn draw_sidebar(frame: &mut Frame, area: Rect, state: &AppState) {
+    let sidebar_focused = state.focus == FocusArea::Sidebar;
     let block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(theme::BORDER));
+        .borders(Borders::ALL)
+        .border_style(focus::panel_border_style(sidebar_focused))
+        .title(Span::styled(
+            " 菜单 ",
+            focus::selected_text_style(sidebar_focused),
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let cur = state.current_menu();
-    let sidebar_focused = state.focus == FocusArea::Sidebar;
 
     let mut lines: Vec<Line> = Vec::with_capacity(MenuItem::ALL.len() + 2);
     lines.push(Line::from(""));
@@ -122,14 +126,9 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, state: &AppState) {
             "  "
         };
         let style = if is_current && sidebar_focused {
-            Style::default()
-                .bg(theme::BG_SELECTED)
-                .fg(theme::FG_SELECTED)
-                .add_modifier(Modifier::BOLD)
+            focus::focused_button_style()
         } else if is_current {
-            Style::default()
-                .fg(theme::FG_HINT)
-                .add_modifier(Modifier::BOLD)
+            focus::selected_text_style(false)
         } else {
             Style::default().fg(theme::FG_NORMAL)
         };
@@ -147,26 +146,37 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn draw_content(frame: &mut Frame, area: Rect, state: &AppState) {
+    let content_focused = state.focus == FocusArea::Content;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(focus::panel_border_style(content_focused))
+        .title(Span::styled(
+            " 内容 ",
+            focus::selected_text_style(content_focused),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     match &state.route {
-        Route::Dashboard => views::dashboard::render(frame, area, state),
-        Route::Sites(SitesRoute::List) => views::sites::render_list(frame, area, state),
-        Route::Sites(SitesRoute::New) => views::site_form::render(frame, area, state),
+        Route::Dashboard => views::dashboard::render(frame, inner, state),
+        Route::Sites(SitesRoute::List) => views::sites::render_list(frame, inner, state),
+        Route::Sites(SitesRoute::New) => views::site_form::render(frame, inner, state),
         Route::Sites(SitesRoute::EditManaged { .. }) => {
-            views::site_edit::render(frame, area, state)
+            views::site_edit::render(frame, inner, state)
         }
         Route::Sites(SitesRoute::EditAdvanced { .. }) => {
-            views::site_edit_advanced::render(frame, area, state)
+            views::site_edit_advanced::render(frame, inner, state)
         }
         Route::Sites(SitesRoute::EditRaw { .. }) => {
-            views::site_edit_raw::render(frame, area, state)
+            views::site_edit_raw::render(frame, inner, state)
         }
         Route::Sites(SitesRoute::EditSlotFull { .. }) => {
-            views::site_edit_slot_full::render(frame, area, state)
+            views::site_edit_slot_full::render(frame, inner, state)
         }
-        Route::Certs => views::certs::render(frame, area, state),
-        Route::Logs => views::logs::render(frame, area, state),
-        Route::Service => views::service::render(frame, area, state),
-        Route::Backup => views::backup::render(frame, area, state),
+        Route::Certs => views::certs::render(frame, inner, state),
+        Route::Logs => views::logs::render(frame, inner, state),
+        Route::Service => views::service::render(frame, inner, state),
+        Route::Backup => views::backup::render(frame, inner, state),
     }
 }
 

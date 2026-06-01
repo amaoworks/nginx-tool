@@ -966,7 +966,6 @@ pub async fn apply_cert_to_site_config(
         ssl_enabled: true,
         ssl_cert_path: cert_path,
         ssl_key_path: key_path,
-        ..Default::default()
     };
 
     let content = crate::template::renderer::render(kind, &params)

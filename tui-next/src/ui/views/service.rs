@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::state::{AppState, ServiceButton};
+use crate::ui::focus;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -100,26 +101,23 @@ fn render_buttons(frame: &mut Frame, area: Rect, state: &AppState) {
         let busy = state.service.running == Some(*btn);
         let disabled = readonly && matches!(btn, ServiceButton::Reload | ServiceButton::Restart);
         let label = if busy {
-            format!("[ {}（执行中）]", btn.label())
+            format!("{}（执行中）", btn.label())
         } else {
-            format!("[ {} ]", btn.label())
+            btn.label().to_string()
         };
         let style = if disabled {
             Style::default()
                 .fg(theme::FG_DIM)
                 .add_modifier(Modifier::DIM)
         } else if focused {
-            Style::default()
-                .bg(theme::BG_SELECTED)
-                .fg(theme::FG_SELECTED)
-                .add_modifier(Modifier::BOLD)
+            focus::focused_button_style()
         } else {
             Style::default().fg(theme::FG_NORMAL)
         };
         let surrounded = if focused {
-            format!("[{}]", label)
+            format!("▶ {} ◀", label)
         } else {
-            label
+            format!("[ {} ]", label)
         };
         let lines = vec![Line::from(""), Line::from(Span::styled(surrounded, style))];
         frame.render_widget(Paragraph::new(lines), cols[i]);

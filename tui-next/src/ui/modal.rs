@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
+use crate::ui::focus;
 use crate::ui::layout::centered_rect;
 use crate::ui::theme;
 
@@ -259,7 +260,7 @@ pub fn render(frame: &mut Frame, parent: Rect, modal: &Modal) {
 }
 
 fn button_row(modal: &Modal) -> Paragraph<'_> {
-    let mut spans = vec![Span::raw("  ")];
+    let mut spans = Vec::new();
 
     if let Some(ref label) = modal.primary_label {
         spans.push(render_button(label, modal.focused == ModalButton::Primary));
@@ -285,13 +286,7 @@ fn button_row(modal: &Modal) -> Paragraph<'_> {
 
 fn render_button<'a>(label: &'a str, focused: bool) -> Span<'a> {
     if focused {
-        Span::styled(
-            format!("[[ {} ]]", label),
-            Style::default()
-                .fg(theme::FG_HEADER)
-                .bg(theme::BG_SELECTED)
-                .add_modifier(Modifier::BOLD),
-        )
+        Span::styled(format!("▶ {} ◀", label), focus::focused_button_style())
     } else {
         Span::styled(format!("[ {} ]", label), Style::default().fg(theme::FG_DIM))
     }

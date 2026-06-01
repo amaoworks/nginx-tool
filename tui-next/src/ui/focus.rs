@@ -17,3 +17,30 @@ pub fn focused_style() -> Style {
 pub fn unfocused_style() -> Style {
     Style::default().fg(theme::FG_NORMAL)
 }
+
+pub fn panel_border_style(focused: bool) -> Style {
+    if focused {
+        Style::default()
+            .fg(theme::BORDER_FOCUS)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::BORDER)
+    }
+}
+
+pub fn selected_text_style(focused: bool) -> Style {
+    if focused {
+        Style::default()
+            .fg(theme::FG_HINT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::FG_HINT)
+    }
+}
+
+pub fn focused_button_style() -> Style {
+    Style::default()
+        .fg(theme::FG_SELECTED)
+        .bg(theme::BG_SELECTED)
+        .add_modifier(Modifier::BOLD)
+}

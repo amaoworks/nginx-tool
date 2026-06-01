@@ -5,8 +5,9 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::state::AppState;
+use crate::app::state::{AppState, FocusArea};
 use crate::domain::site::{SiteType, SslLevel, SslStatus};
+use crate::ui::focus;
 use crate::ui::theme;
 
 pub fn render_list(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -91,6 +92,7 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let rows = state.sites.list.iter().enumerate().map(|(i, s)| {
         let selected = i == state.sites.selected;
+        let table_focused = state.focus == FocusArea::Content;
         let status_span = if s.enabled {
             Span::styled("● 启用", Style::default().fg(theme::FG_OK))
         } else {
@@ -120,13 +122,20 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
 
         let ssl_span = render_ssl_span(&s.ssl);
 
-        let row_style = if selected {
+        let row_style = if selected && table_focused {
             Style::default()
                 .bg(theme::BG_SELECTED)
                 .fg(theme::FG_SELECTED)
                 .add_modifier(Modifier::BOLD)
+        } else if selected {
+            focus::selected_text_style(false)
         } else {
             Style::default()
+        };
+        let name = if selected {
+            format!("▶ {}", s.name)
+        } else {
+            format!("  {}", s.name)
         };
 
         // 动态计算可用宽度：总宽度 - 固定列宽度 - 边距
@@ -136,7 +145,7 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
 
         Row::new(vec![
             Cell::from(status_span),
-            Cell::from(s.name.clone()),
+            Cell::from(name),
             Cell::from(truncate(domain_target, available_width)),
             Cell::from(type_label.to_string()),
             Cell::from(ssl_span),
