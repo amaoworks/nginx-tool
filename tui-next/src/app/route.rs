@@ -57,7 +57,7 @@ impl MenuItem {
             MenuItem::Sites => "📁 站点管理",
             MenuItem::Certs => "🔐 证书管理",
             MenuItem::Logs => "📋 日志查看",
-            MenuItem::Service => "⚙️  服务控制",
+            MenuItem::Service => "⚙️ 服务控制",
             MenuItem::Backup => "💾 备份还原",
         }
     }

@@ -258,7 +258,10 @@ fn render_status(frame: &mut Frame, area: Rect, state: &AppState) {
     let mut parts: Vec<String> = Vec::new();
 
     if logs.focused == LogsFocus::SearchInput {
-        parts.push("搜索中".to_string());
+        let query = logs.search_query.as_deref().unwrap_or("");
+        parts.push(format!("搜索: {}▏", query));
+        parts.push("Enter 执行".to_string());
+        parts.push("Esc 取消".to_string());
     } else {
         if logs.paused {
             parts.push("已暂停".to_string());

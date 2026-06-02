@@ -10,7 +10,7 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default().borders(Borders::NONE).title(Span::styled(
-        " ⚙️  服务控制 ",
+        " ⚙️ 服务控制 ",
         Style::default().fg(theme::FG_PATH),
     ));
     let inner = block.inner(area);

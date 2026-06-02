@@ -3834,9 +3834,6 @@ impl AppState {
                 KeyCode::Backspace => {
                     if let Some(ref mut q) = self.logs.search_query {
                         q.pop();
-                        if q.is_empty() {
-                            self.logs.search_query = None;
-                        }
                     }
                     return;
                 }

@@ -347,7 +347,7 @@ fn footer_hints_for_certs(state: &AppState) -> Vec<&'static str> {
 
 fn footer_hints_for_logs(state: &AppState) -> Vec<&'static str> {
     match state.logs.focused {
-        LogsFocus::SearchInput => vec!["[Enter] 搜索", "[Esc] 取消", "[Tab] 切区域"],
+        LogsFocus::SearchInput => vec!["输入关键字", "[Enter] 搜索", "[Esc] 取消"],
         LogsFocus::SiteSelector | LogsFocus::KindSelector => {
             vec!["[←→] 切换", "[Tab] 切区域", "[/] 搜索", "[Esc] 返回侧栏"]
         }
