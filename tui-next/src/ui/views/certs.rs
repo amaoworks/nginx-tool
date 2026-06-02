@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // 状态行
         Constraint::Min(6),    // 证书表格
-        Constraint::Length(4), // 站点选择 + 操作按钮
+        Constraint::Length(6), // 当前站点操作 + 全局维护
         Constraint::Length(5), // 自动续签状态
         Constraint::Min(3),    // 操作输出
     ])
@@ -178,7 +178,12 @@ fn render_status_span<'a>(c: &CertWithSite) -> Span<'a> {
 }
 
 fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
-    let chunks = Layout::vertical([Constraint::Length(2), Constraint::Length(2)]).split(area);
+    let chunks = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
+    ])
+    .split(area);
 
     let site = state.sites.list.get(state.certs.site_selector_index);
     let detail_lines = match site {
@@ -199,21 +204,59 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
         chunks[0],
     );
 
-    // 操作按钮行
-    let buttons_focused = state.certs.focused == CertsFocus::ActionButtons;
+    render_action_group(
+        frame,
+        chunks[1],
+        state,
+        "当前站点操作",
+        &CertsAction::SITE_ACTIONS,
+        CertsFocus::SiteActions,
+    );
+    render_action_group(
+        frame,
+        chunks[2],
+        state,
+        "全局维护",
+        &CertsAction::GLOBAL_ACTIONS,
+        CertsFocus::GlobalActions,
+    );
+}
+
+fn render_action_group(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    title: &'static str,
+    actions: &[CertsAction],
+    focus_area: CertsFocus,
+) {
+    let focused_group = state.certs.focused == focus_area;
     let readonly = state.run_mode.is_readonly() || !state.ctx.deps().certbot;
+    let title_style = if focused_group {
+        Style::default()
+            .fg(theme::FG_HINT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::FG_DIM)
+    };
+    let cols = Layout::horizontal(
+        std::iter::once(Constraint::Length(14))
+            .chain(
+                actions
+                    .iter()
+                    .map(|_| Constraint::Percentage((100usize / actions.len().max(1)) as u16)),
+            )
+            .collect::<Vec<_>>(),
+    )
+    .split(area);
 
-    let cols = Layout::horizontal([
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
-    ])
-    .split(chunks[1]);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(format!("{}:", title), title_style))),
+        cols[0],
+    );
 
-    for (i, action) in CertsAction::ALL.iter().enumerate() {
-        let focused = buttons_focused && state.certs.action_focus == *action;
+    for (i, action) in actions.iter().enumerate() {
+        let focused = focused_group && state.certs.action_focus == *action;
         let busy = state.certs.running == Some(*action);
         let disabled = readonly
             && matches!(
@@ -223,15 +266,12 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
                     | CertsAction::InstallDeployHook
                     | CertsAction::DeleteOrphan
             );
-        // 钩子已安装时显示为已就绪，不可点击
         let hook_ok = matches!(action, CertsAction::InstallDeployHook)
             && state
                 .certs
                 .auto_renew
                 .as_ref()
                 .is_some_and(|s| s.deploy_hook_present);
-
-        // 没有可安全清理的孤立/冗余证书时，删除按钮不可用
         let no_cleanup_candidates = matches!(action, CertsAction::DeleteOrphan)
             && crate::domain::cert::cleanup_candidates(&state.certs.list).is_empty();
 
@@ -260,7 +300,7 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(surrounded, style))),
-            cols[i],
+            cols[i + 1],
         );
     }
 }
@@ -326,7 +366,7 @@ fn site_status_span<'a>(certs: &[&CertWithSite]) -> Span<'a> {
 fn selected_site_lines(state: &AppState, site: &Site) -> Vec<Line<'static>> {
     let certs = certs_for_site(state, site);
     let focus_hint = if state.certs.focused == CertsFocus::Table {
-        "  [Enter] 进入操作"
+        "  [Enter] 申请证书"
     } else {
         ""
     };

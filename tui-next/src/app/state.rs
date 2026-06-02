@@ -200,8 +200,10 @@ pub enum CertsFocus {
     /// 站点列表（↑↓ 选中站点）
     #[default]
     Table,
-    /// 操作按钮（申请 / 续期 / 检查自动续签）
-    ActionButtons,
+    /// 当前站点操作（申请证书）
+    SiteActions,
+    /// 全局维护操作（续期 / 自动续签 / hook / 清理）
+    GlobalActions,
 }
 
 /// 证书页操作按钮
@@ -218,6 +220,13 @@ pub enum CertsAction {
 impl CertsAction {
     pub const ALL: [CertsAction; 5] = [
         CertsAction::Request,
+        CertsAction::RenewAll,
+        CertsAction::CheckAutoRenew,
+        CertsAction::InstallDeployHook,
+        CertsAction::DeleteOrphan,
+    ];
+    pub const SITE_ACTIONS: [CertsAction; 1] = [CertsAction::Request];
+    pub const GLOBAL_ACTIONS: [CertsAction; 4] = [
         CertsAction::RenewAll,
         CertsAction::CheckAutoRenew,
         CertsAction::InstallDeployHook,
@@ -271,14 +280,19 @@ pub struct CertsState {
 
 impl CertsState {
     pub fn cycle_action(&mut self, delta: i32) {
-        let len = CertsAction::ALL.len() as i32;
-        let cur = CertsAction::ALL
+        let actions = match self.focused {
+            CertsFocus::Table => &CertsAction::ALL[..],
+            CertsFocus::SiteActions => &CertsAction::SITE_ACTIONS[..],
+            CertsFocus::GlobalActions => &CertsAction::GLOBAL_ACTIONS[..],
+        };
+        let len = actions.len() as i32;
+        let cur = actions
             .iter()
             .position(|a| *a == self.action_focus)
             .map(|x| x as i32)
             .unwrap_or(0);
         let next = (cur + delta).rem_euclid(len) as usize;
-        self.action_focus = CertsAction::ALL[next];
+        self.action_focus = actions[next];
     }
 
     pub fn push_output(&mut self, lines: impl IntoIterator<Item = String>) {
@@ -4018,8 +4032,15 @@ impl AppState {
             }
             KeyCode::Tab => {
                 self.certs.focused = match self.certs.focused {
-                    CertsFocus::Table => CertsFocus::ActionButtons,
-                    CertsFocus::ActionButtons => CertsFocus::Table,
+                    CertsFocus::Table => {
+                        self.certs.action_focus = CertsAction::Request;
+                        CertsFocus::SiteActions
+                    }
+                    CertsFocus::SiteActions => {
+                        self.certs.action_focus = CertsAction::RenewAll;
+                        CertsFocus::GlobalActions
+                    }
+                    CertsFocus::GlobalActions => CertsFocus::Table,
                 };
                 return;
             }
@@ -4039,15 +4060,27 @@ impl AppState {
                 KeyCode::Up => self.certs_site_selector_move(-1),
                 KeyCode::Down => self.certs_site_selector_move(1),
                 KeyCode::Enter => {
-                    self.certs.focused = CertsFocus::ActionButtons;
+                    self.certs.focused = CertsFocus::SiteActions;
                     self.certs.action_focus = CertsAction::Request;
                 }
                 _ => {}
             },
-            CertsFocus::ActionButtons => match k.code {
+            CertsFocus::SiteActions => match k.code {
+                KeyCode::Up => self.certs.focused = CertsFocus::Table,
+                KeyCode::Down => {
+                    self.certs.focused = CertsFocus::GlobalActions;
+                    self.certs.action_focus = CertsAction::RenewAll;
+                }
+                KeyCode::Enter => self.request_certs_action(),
+                _ => {}
+            },
+            CertsFocus::GlobalActions => match k.code {
                 KeyCode::Left => self.certs.cycle_action(-1),
                 KeyCode::Right => self.certs.cycle_action(1),
-                KeyCode::Up => self.certs.focused = CertsFocus::Table,
+                KeyCode::Up => {
+                    self.certs.focused = CertsFocus::SiteActions;
+                    self.certs.action_focus = CertsAction::Request;
+                }
                 KeyCode::Enter => self.request_certs_action(),
                 _ => {}
             },
