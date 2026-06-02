@@ -72,10 +72,35 @@ fn restore_terminal() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let paths = crate::infra::paths::AppPaths::detect().ok()?;
+    std::fs::create_dir_all(&paths.logs).ok()?;
+
+    let file_appender = tracing_appender::rolling::never(&paths.logs, "tui.log");
+    let (writer, guard) = tracing_appender::non_blocking(file_appender);
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("ngtool=info"));
+
+    tracing_subscriber::fmt()
+        .with_writer(writer)
+        .with_env_filter(env_filter)
+        .with_ansi(false)
+        .init();
+
+    Some(guard)
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let _log_guard = init_logging();
     install_panic_hook();
+    tracing::info!(
+        version = crate::version::APP_VERSION,
+        readonly = cli.readonly,
+        config = ?cli.config,
+        "ngtool tui starting"
+    );
 
     let ctx = Arc::new(bootstrap(BootstrapOptions {
         force_readonly: cli.readonly,
@@ -83,8 +108,12 @@ async fn main() -> anyhow::Result<()> {
     })?);
 
     let mut terminal = enter_terminal()?;
-    let result = run(&mut terminal, ctx).await;
+    let result = run(&mut terminal, ctx.clone()).await;
     let _ = restore_terminal();
+    match &result {
+        Ok(_) => tracing::info!("ngtool tui exited"),
+        Err(e) => tracing::error!(error = %e, "ngtool tui exited with error"),
+    }
     result
 }
 
@@ -92,6 +121,13 @@ async fn main() -> anyhow::Result<()> {
 const DASHBOARD_TOTAL_BUDGET: Duration = Duration::from_secs(5);
 
 async fn run(terminal: &mut Tui, ctx: Arc<AppContext>) -> anyhow::Result<()> {
+    tracing::info!(
+        readonly = ctx.readonly(),
+        readonly_reason = ?ctx.readonly_reason,
+        log_dir = %ctx.paths.logs.display(),
+        "ngtool tui main loop started"
+    );
+
     let mut state = AppState::new(ctx.clone());
     let mut events = EventStream::new();
 

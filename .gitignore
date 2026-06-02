@@ -1,4 +1,5 @@
 /target
 tui-next/target/
+.venv/
 **/*.rs.bk
 Cargo.lock.tmp

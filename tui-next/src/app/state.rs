@@ -1880,10 +1880,11 @@ impl AppState {
                 }
             }
             AppEvent::LogTailLine { line } => {
-                let follow_tail = self.logs.is_following_tail(0);
+                let visible_lines = self.logs_visible_lines_estimate();
+                let follow_tail = self.logs.is_following_tail(visible_lines);
                 self.logs.push_line(line);
                 if follow_tail && !self.logs.paused {
-                    self.logs.follow_tail(0);
+                    self.logs.follow_tail(visible_lines);
                 }
                 // 如果有搜索，重新计算匹配
                 let query = self.logs.search_query.clone();
@@ -4860,5 +4861,31 @@ server {
         assert_eq!(logs.buffer.len(), 3);
         assert_eq!(logs.vertical_scroll, 0);
         assert_eq!(logs.match_lines, vec![0, 1]);
+    }
+
+    #[test]
+    fn logs_follow_tail_keeps_last_lines_visible_after_append() {
+        let mut logs = LogsState::default();
+        let visible_lines = 5;
+
+        let was_following = logs.is_following_tail(visible_lines);
+        logs.push_line("line-1".into());
+        if was_following && !logs.paused {
+            logs.follow_tail(visible_lines);
+        }
+
+        assert_eq!(logs.vertical_scroll, 0);
+        assert!(logs.buffer.front().is_some_and(|line| line == "line-1"));
+
+        logs.buffer = (0..20).map(|i| format!("line-{i}")).collect();
+        logs.follow_tail(visible_lines);
+        let was_following = logs.is_following_tail(visible_lines);
+        logs.push_line("line-20".into());
+        if was_following && !logs.paused {
+            logs.follow_tail(visible_lines);
+        }
+
+        assert_eq!(logs.vertical_scroll, 16);
+        assert_eq!(logs.max_vertical_scroll(visible_lines), 16);
     }
 }
