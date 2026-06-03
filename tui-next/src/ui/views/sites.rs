@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::state::{AppState, FocusArea};
+use crate::app::state::{AppState, FocusArea, SitesSortField};
 use crate::domain::site::{SiteType, SslLevel, SslStatus};
 use crate::ui::focus;
 use crate::ui::theme;
@@ -67,26 +67,14 @@ pub fn render_list(frame: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
     let header_cells = [
-        Cell::from(Span::styled(
-            "状态",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Cell::from(Span::styled(
-            "名称",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
+        sortable_header("状态", SitesSortField::Status, state),
+        sortable_header("名称", SitesSortField::Name, state),
         Cell::from(Span::styled(
             "域名 → 目标",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Cell::from(Span::styled(
-            "类型",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Cell::from(Span::styled(
-            "SSL",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
+        sortable_header("类型", SitesSortField::Type, state),
+        sortable_header("SSL", SitesSortField::Ssl, state),
     ];
     let header = Row::new(header_cells).height(1).bottom_margin(0);
 
@@ -186,6 +174,23 @@ fn render_ssl_span<'a>(ssl: &SslStatus) -> Span<'a> {
     }
 }
 
+fn sortable_header<'a>(label: &'static str, field: SitesSortField, state: &AppState) -> Cell<'a> {
+    let active = state.sites.sort_by == field;
+    let text = if active {
+        format!("{}{}", label, state.sites.sort_order.glyph())
+    } else {
+        label.to_string()
+    };
+    let style = if active {
+        Style::default()
+            .fg(theme::FG_HINT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    };
+    Cell::from(Span::styled(text, style))
+}
+
 fn render_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     let Some(s) = state.sites.current() else {
         return;
@@ -252,7 +257,16 @@ fn render_meta(frame: &mut Frame, area: Rect, state: &AppState) {
             format!("最近刷新 {}s 前", t.elapsed().as_secs()),
             Style::default().fg(theme::FG_DIM),
         ));
+        tips.push(Span::raw("  "));
     }
+    tips.push(Span::styled(
+        format!(
+            "排序: {}{}",
+            state.sites.sort_by.label(),
+            state.sites.sort_order.glyph()
+        ),
+        Style::default().fg(theme::FG_DIM),
+    ));
     let p = Paragraph::new(vec![Line::from(""), Line::from(tips)]).alignment(Alignment::Left);
     frame.render_widget(p, area);
 }

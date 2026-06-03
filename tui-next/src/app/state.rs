@@ -140,6 +140,10 @@ pub struct SitesState {
     pub pending_toggle: Option<(String, bool)>,
     /// 待派发的删除请求（站点名）
     pub pending_delete: Option<String>,
+    /// 当前排序字段
+    pub sort_by: SitesSortField,
+    /// 当前排序方向
+    pub sort_order: SortOrder,
 }
 
 impl SitesState {
@@ -160,6 +164,135 @@ impl SitesState {
 
     pub fn current(&self) -> Option<&Site> {
         self.list.get(self.selected)
+    }
+
+    pub fn cycle_sort_field(&mut self) {
+        let current_name = self.current().map(|site| site.name.clone());
+        self.sort_by = self.sort_by.next();
+        self.sort_preserving_selection(current_name.as_deref());
+    }
+
+    pub fn toggle_sort_order(&mut self) {
+        let current_name = self.current().map(|site| site.name.clone());
+        self.sort_order = self.sort_order.toggle();
+        self.sort_preserving_selection(current_name.as_deref());
+    }
+
+    pub fn replace_list(&mut self, list: Vec<Site>) {
+        let current_name = self.current().map(|site| site.name.clone());
+        self.list = list;
+        self.sort_preserving_selection(current_name.as_deref());
+    }
+
+    fn sort_preserving_selection(&mut self, preferred_name: Option<&str>) {
+        self.list.sort_by(|a, b| {
+            let cmp = match self.sort_by {
+                SitesSortField::Status => site_enabled_rank(a).cmp(&site_enabled_rank(b)),
+                SitesSortField::Name => a.name.cmp(&b.name),
+                SitesSortField::Type => site_type_rank(a).cmp(&site_type_rank(b)),
+                SitesSortField::Ssl => site_ssl_rank(a).cmp(&site_ssl_rank(b)),
+            }
+            .then_with(|| a.name.cmp(&b.name));
+
+            match self.sort_order {
+                SortOrder::Asc => cmp,
+                SortOrder::Desc => cmp.reverse(),
+            }
+        });
+
+        if let Some(name) = preferred_name {
+            if let Some(idx) = self.list.iter().position(|site| site.name == name) {
+                self.selected = idx;
+                return;
+            }
+        }
+
+        self.selected = self.selected.min(self.list.len().saturating_sub(1));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SitesSortField {
+    Status,
+    #[default]
+    Name,
+    Type,
+    Ssl,
+}
+
+impl SitesSortField {
+    pub fn label(self) -> &'static str {
+        match self {
+            SitesSortField::Status => "状态",
+            SitesSortField::Name => "名称",
+            SitesSortField::Type => "类型",
+            SitesSortField::Ssl => "SSL",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            SitesSortField::Status => SitesSortField::Name,
+            SitesSortField::Name => SitesSortField::Type,
+            SitesSortField::Type => SitesSortField::Ssl,
+            SitesSortField::Ssl => SitesSortField::Status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortOrder {
+    #[default]
+    Asc,
+    Desc,
+}
+
+impl SortOrder {
+    pub fn glyph(self) -> &'static str {
+        match self {
+            SortOrder::Asc => "↑",
+            SortOrder::Desc => "↓",
+        }
+    }
+
+    fn toggle(self) -> Self {
+        match self {
+            SortOrder::Asc => SortOrder::Desc,
+            SortOrder::Desc => SortOrder::Asc,
+        }
+    }
+}
+
+fn site_enabled_rank(site: &Site) -> u8 {
+    if site.enabled {
+        0
+    } else {
+        1
+    }
+}
+
+fn site_type_rank(site: &Site) -> u8 {
+    match site.site_type {
+        crate::domain::site::SiteType::Proxy => 0,
+        crate::domain::site::SiteType::Emby => 1,
+        crate::domain::site::SiteType::Static => 2,
+        crate::domain::site::SiteType::Unknown => 3,
+    }
+}
+
+fn site_ssl_rank(site: &Site) -> (u8, i64) {
+    match &site.ssl {
+        crate::domain::site::SslStatus::Active { days_left } => {
+            let level = site.ssl.level();
+            let rank = match level {
+                crate::domain::site::SslLevel::Critical => 0,
+                crate::domain::site::SslLevel::Warning => 1,
+                crate::domain::site::SslLevel::Ok => 2,
+                crate::domain::site::SslLevel::None => 3,
+            };
+            (rank, *days_left)
+        }
+        crate::domain::site::SslStatus::None => (3, i64::MAX),
     }
 }
 
@@ -732,14 +865,20 @@ impl Default for LogsState {
 impl LogsState {
     /// 追加日志行，超出限制时丢弃最旧行
     pub fn push_line(&mut self, line: String) {
+        let preferred_line = self
+            .match_index
+            .and_then(|idx| self.match_lines.get(idx).copied());
+        let mut adjusted_preferred_line = preferred_line;
+
         if self.buffer.len() >= self.max_lines {
             self.buffer.pop_front();
             self.vertical_scroll = self.vertical_scroll.saturating_sub(1);
-            for idx in &mut self.match_lines {
-                *idx = idx.saturating_sub(1);
-            }
+            adjusted_preferred_line = preferred_line.map(|idx| idx.saturating_sub(1));
         }
         self.buffer.push_back(line);
+        if self.search_query.is_some() {
+            self.rebuild_matches(adjusted_preferred_line);
+        }
     }
 
     /// 清空缓冲区
@@ -754,22 +893,7 @@ impl LogsState {
     /// 执行搜索，更新 match_lines
     pub fn search(&mut self, query: &str) {
         self.search_query = Some(query.to_string());
-        self.match_lines.clear();
-        self.match_index = None;
-
-        if query.is_empty() {
-            return;
-        }
-
-        for (i, line) in self.buffer.iter().enumerate() {
-            if line.contains(query) {
-                self.match_lines.push(i);
-            }
-        }
-
-        if !self.match_lines.is_empty() {
-            self.match_index = Some(0);
-        }
+        self.rebuild_matches(None);
     }
 
     /// 跳转到下一个匹配
@@ -801,6 +925,32 @@ impl LogsState {
         self.search_query = None;
         self.match_lines.clear();
         self.match_index = None;
+    }
+
+    fn rebuild_matches(&mut self, preferred_line: Option<usize>) {
+        self.match_lines.clear();
+        self.match_index = None;
+
+        let Some(query) = self.search_query.as_deref() else {
+            return;
+        };
+        if query.is_empty() {
+            return;
+        }
+
+        for (i, line) in self.buffer.iter().enumerate() {
+            if line.contains(query) {
+                self.match_lines.push(i);
+            }
+        }
+
+        if self.match_lines.is_empty() {
+            return;
+        }
+
+        self.match_index = preferred_line
+            .and_then(|line| self.match_lines.iter().position(|idx| *idx >= line))
+            .or(Some(0));
     }
 
     /// 是否自动跟随到最新日志
@@ -1680,14 +1830,11 @@ impl AppState {
                 match *b {
                     Ok(list) => {
                         self.sites.last_error = None;
-                        // 保持选中位置在范围内
-                        if self.sites.selected >= list.len() {
-                            self.sites.selected = list.len().saturating_sub(1);
+                        let list_len = list.len();
+                        self.sites.replace_list(list);
+                        if self.certs.site_selector_index >= list_len {
+                            self.certs.site_selector_index = list_len.saturating_sub(1);
                         }
-                        if self.certs.site_selector_index >= list.len() {
-                            self.certs.site_selector_index = list.len().saturating_sub(1);
-                        }
-                        self.sites.list = list;
                     }
                     Err(msg) => {
                         self.sites.last_error = Some(msg);
@@ -2352,6 +2499,14 @@ impl AppState {
                 }
                 KeyCode::Char('s') => {
                     self.request_site_toggle();
+                    return;
+                }
+                KeyCode::Char('o') => {
+                    self.sites.cycle_sort_field();
+                    return;
+                }
+                KeyCode::Char('p') => {
+                    self.sites.toggle_sort_order();
                     return;
                 }
                 KeyCode::Char('n') => {
@@ -4506,7 +4661,24 @@ mod tests {
     #![allow(clippy::field_reassign_with_default)]
 
     use super::*;
+    use crate::domain::site::{Site, SiteType, SslStatus};
     use crate::template::config_parser::InjectionSlot;
+    use std::path::PathBuf;
+
+    fn test_site(name: &str, enabled: bool, site_type: SiteType, ssl: SslStatus) -> Site {
+        Site {
+            name: name.to_string(),
+            primary_domain: None,
+            all_domains: Vec::new(),
+            access_log_path: None,
+            error_log_path: None,
+            site_type,
+            target: None,
+            enabled,
+            ssl,
+            config_path: PathBuf::from(format!("/tmp/{name}.conf")),
+        }
+    }
 
     #[test]
     fn char_to_byte_ascii() {
@@ -4526,6 +4698,57 @@ mod tests {
         assert_eq!(char_to_byte(s, 4), 12);
         // 越界回到字节末尾
         assert_eq!(char_to_byte(s, 99), 12);
+    }
+
+    #[test]
+    fn sites_sort_preserves_selected_site() {
+        let mut sites = SitesState {
+            list: vec![
+                test_site("beta", false, SiteType::Static, SslStatus::None),
+                test_site("alpha", true, SiteType::Proxy, SslStatus::None),
+                test_site(
+                    "gamma",
+                    true,
+                    SiteType::Emby,
+                    SslStatus::Active { days_left: 9 },
+                ),
+            ],
+            selected: 1,
+            ..Default::default()
+        };
+
+        sites.sort_by = SitesSortField::Status;
+        sites.sort_preserving_selection(Some("alpha"));
+
+        assert_eq!(sites.list[0].name, "alpha");
+        assert_eq!(sites.list[1].name, "gamma");
+        assert_eq!(sites.list[2].name, "beta");
+        assert_eq!(
+            sites.current().map(|site| site.name.as_str()),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn sites_cycle_sort_field_keeps_current_site() {
+        let mut sites = SitesState {
+            list: vec![
+                test_site("b", false, SiteType::Unknown, SslStatus::None),
+                test_site(
+                    "a",
+                    true,
+                    SiteType::Proxy,
+                    SslStatus::Active { days_left: 3 },
+                ),
+            ],
+            selected: 0,
+            ..Default::default()
+        };
+
+        sites.cycle_sort_field();
+
+        assert_eq!(sites.sort_by, SitesSortField::Type);
+        assert_eq!(sites.current().map(|site| site.name.as_str()), Some("b"));
     }
 
     #[test]
@@ -4879,18 +5102,56 @@ server {
         let mut logs = LogsState {
             max_lines: 3,
             vertical_scroll: 1,
-            match_lines: vec![1, 2],
             ..Default::default()
         };
         logs.buffer.push_back("a".into());
-        logs.buffer.push_back("b".into());
-        logs.buffer.push_back("c".into());
+        logs.buffer.push_back("match-b".into());
+        logs.buffer.push_back("match-c".into());
+        logs.search("match");
 
         logs.push_line("d".into());
 
         assert_eq!(logs.buffer.len(), 3);
         assert_eq!(logs.vertical_scroll, 0);
         assert_eq!(logs.match_lines, vec![0, 1]);
+    }
+
+    #[test]
+    fn logs_push_line_rebuilds_search_matches() {
+        let mut logs = LogsState::default();
+        logs.buffer.push_back("first error".into());
+        logs.search("error");
+
+        logs.push_line("second error".into());
+
+        assert_eq!(logs.match_lines, vec![0, 1]);
+        assert_eq!(logs.match_index, Some(0));
+    }
+
+    #[test]
+    fn logs_push_line_removes_stale_matches_when_buffer_rolls() {
+        let mut logs = LogsState {
+            max_lines: 3,
+            ..Default::default()
+        };
+        logs.buffer.push_back("old error".into());
+        logs.buffer.push_back("plain".into());
+        logs.buffer.push_back("new error".into());
+        logs.search("error");
+        logs.next_match();
+
+        logs.push_line("plain tail".into());
+
+        assert_eq!(
+            logs.buffer.iter().cloned().collect::<Vec<_>>(),
+            vec![
+                "plain".to_string(),
+                "new error".to_string(),
+                "plain tail".to_string(),
+            ]
+        );
+        assert_eq!(logs.match_lines, vec![1]);
+        assert_eq!(logs.match_index, Some(0));
     }
 
     #[test]

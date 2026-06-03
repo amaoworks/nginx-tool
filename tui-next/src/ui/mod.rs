@@ -218,6 +218,8 @@ fn footer_hints(state: &AppState) -> String {
             "[↑↓] 选择",
             "[Enter] 编辑",
             "[s] 启停",
+            "[o] 排序",
+            "[p] 顺/逆",
             "[n] 新建",
             "[d] 删除",
             "[c] 申请证书",
