@@ -1,4 +1,4 @@
-//! 证书管理视图，对应 design.md 视图 3 / architecture.md §11.4。
+//! 证书管理视图：站点表 + 全局维护扁平布局。
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -25,70 +25,131 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // 状态(含自动续签) | 表格 | 当前站点摘要 | 全局维护 | 输出
     let chunks = Layout::vertical([
-        Constraint::Length(1), // 状态行
-        Constraint::Min(6),    // 证书表格
-        Constraint::Length(6), // 当前站点操作 + 全局维护
-        Constraint::Length(5), // 自动续签状态
+        Constraint::Length(2), // 状态 + 自动续签摘要
+        Constraint::Min(6),    // 站点证书表
+        Constraint::Length(1), // 当前站点一行
+        Constraint::Length(2), // 全局维护按钮
         Constraint::Min(3),    // 操作输出
     ])
     .split(inner);
 
-    render_status_line(frame, chunks[0], state);
+    render_status_block(frame, chunks[0], state);
     render_table(frame, chunks[1], state);
-    render_actions(frame, chunks[2], state);
-    render_auto_renew(frame, chunks[3], state);
+    render_site_summary(frame, chunks[2], state);
+    render_global_actions(frame, chunks[3], state);
     render_output(frame, chunks[4], state);
 }
 
-fn render_status_line(frame: &mut Frame, area: Rect, state: &AppState) {
-    let mut spans: Vec<Span> = Vec::new();
+fn render_status_block(frame: &mut Frame, area: Rect, state: &AppState) {
+    let mut line1: Vec<Span> = Vec::new();
     if !state.ctx.deps().certbot {
-        spans.push(Span::styled(
+        line1.push(Span::styled(
             "⚠ certbot 未安装，证书操作不可用",
             Style::default().fg(theme::FG_WARN),
         ));
     } else if state.certs.refreshing {
-        spans.push(Span::styled("采集中…", Style::default().fg(theme::FG_HINT)));
+        line1.push(Span::styled("采集中…", Style::default().fg(theme::FG_HINT)));
     } else if let Some(t) = state.certs.last_refresh {
-        spans.push(Span::styled(
+        line1.push(Span::styled(
             format!("最近刷新 {}s 前", t.elapsed().as_secs()),
             Style::default().fg(theme::FG_DIM),
         ));
     } else {
-        spans.push(Span::styled(
+        line1.push(Span::styled(
             "等待首次刷新…",
             Style::default().fg(theme::FG_DIM),
         ));
     }
-    if state.certs.raw_output.is_some() {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            "⚠ certbot 输出未能完整解析",
-            Style::default().fg(theme::FG_WARN),
-        ));
-    }
+
     let orphan_count = state.certs.list.iter().filter(|item| item.orphan).count();
     let cleanup_count = crate::domain::cert::cleanup_candidates(&state.certs.list).len();
     if orphan_count > 0 || cleanup_count > 0 {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("孤立 {} 个 / 可清理多余 {} 个", orphan_count, cleanup_count),
+        line1.push(Span::raw("  ·  "));
+        line1.push(Span::styled(
+            format!("孤立 {} / 可清理 {}", orphan_count, cleanup_count),
+            Style::default().fg(theme::FG_WARN),
+        ));
+    }
+    if state.certs.raw_output.is_some() {
+        line1.push(Span::raw("  ·  "));
+        line1.push(Span::styled(
+            "⚠ 输出未能完整解析",
             Style::default().fg(theme::FG_WARN),
         ));
     }
     if let Some(err) = &state.certs.last_error {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("⚠ {}", err),
+        line1.push(Span::raw("  ·  "));
+        line1.push(Span::styled(
+            format!("⚠ {}", truncate(err, 40)),
             Style::default().fg(theme::FG_WARN),
         ));
     }
-    let p = Paragraph::new(Line::from(spans));
-    frame.render_widget(p, area);
+
+    // 第二行：自动续签状态（只读摘要，不占独立框）
+    let line2 = auto_renew_summary_spans(state);
+
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(line1), Line::from(line2)]).wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn auto_renew_summary_spans(state: &AppState) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        "自动续签  ",
+        Style::default().fg(theme::FG_DIM),
+    )];
+    match &state.certs.auto_renew {
+        Some(s) => {
+            let (glyph, label, style) = if s.timer_active {
+                ("●", "已启用", Style::default().fg(theme::FG_OK))
+            } else {
+                ("○", "未启用", Style::default().fg(theme::FG_WARN))
+            };
+            spans.push(Span::styled(format!("{} {}", glyph, label), style));
+            if let Some(next) = &s.next_run {
+                spans.push(Span::styled(
+                    format!(" · 下次 {}", next),
+                    Style::default().fg(theme::FG_DIM),
+                ));
+            }
+            if s.deploy_hook_present {
+                spans.push(Span::styled(
+                    " · ✓ 重载钩子",
+                    Style::default().fg(theme::FG_OK),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    " · ✗ 重载钩子缺失",
+                    Style::default().fg(theme::FG_WARN),
+                ));
+            }
+        }
+        None => {
+            spans.push(Span::styled(
+                "（尚未检查）",
+                Style::default().fg(theme::FG_DIM),
+            ));
+        }
+    }
+    spans
 }
 
 fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
+    let table_focused =
+        state.focus == FocusArea::Content && state.certs.focused == CertsFocus::Table;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(focus::panel_border_style(table_focused))
+        .title(Span::styled(
+            " 站点证书 ",
+            Style::default().fg(theme::FG_PATH),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     if state.sites.list.is_empty() {
         let body = if state.certs.refreshing {
             "采集中…"
@@ -96,14 +157,12 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
             "certbot 未安装，但仍可先到「站点」页创建站点"
         } else if !state.certs.list.is_empty() {
             "未发现站点配置。当前存在证书，但它们未关联到任何站点。"
-        } else if !state.ctx.deps().certbot {
-            "certbot 未安装，证书表格不可用"
         } else {
             "未发现站点配置。先到「站点」页创建站点后再申请证书。"
         };
         let p = Paragraph::new(vec![Line::from(""), Line::from(body)])
             .style(Style::default().fg(theme::FG_DIM));
-        frame.render_widget(p, area);
+        frame.render_widget(p, inner);
         return;
     }
 
@@ -120,8 +179,6 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let rows = state.sites.list.iter().enumerate().map(|(i, s)| {
         let selected = i == state.certs.site_selector_index;
-        let table_focused =
-            state.focus == FocusArea::Content && state.certs.focused == CertsFocus::Table;
         let row_style = if selected && table_focused {
             Style::default()
                 .bg(theme::BG_SELECTED)
@@ -153,85 +210,68 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
     });
 
     let widths = [
-        Constraint::Length(12),
+        Constraint::Length(14),
         Constraint::Min(20),
         Constraint::Length(18),
         Constraint::Length(14),
     ];
     let table = Table::new(rows, widths).header(header);
-    frame.render_widget(table, area);
+    frame.render_widget(table, inner);
 }
 
-fn render_status_span<'a>(c: &CertWithSite) -> Span<'a> {
-    match (c.cert.level, c.cert.days_left) {
-        (Some(level), Some(days)) => {
-            let style = match level {
-                CertLevel::Ok => Style::default().fg(theme::FG_OK),
-                CertLevel::Warning => Style::default().fg(theme::FG_WARN),
-                CertLevel::Critical => Style::default().fg(theme::FG_ERR),
-                CertLevel::Expired => Style::default().fg(theme::FG_ERR),
-            };
-            Span::styled(format!("{} {} 天", level.glyph(), days), style)
-        }
-        _ => Span::styled("? 未知", Style::default().fg(theme::FG_DIM)),
-    }
-}
-
-fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
-    let chunks = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Length(2),
-        Constraint::Length(2),
-    ])
-    .split(area);
-
-    let site = state.sites.list.get(state.certs.site_selector_index);
-    let detail_lines = match site {
-        Some(site) => selected_site_lines(state, site),
-        None => vec![
-            Line::from(Span::styled(
-                "当前没有可操作的站点",
+fn render_site_summary(frame: &mut Frame, area: Rect, state: &AppState) {
+    let Some(site) = state.sites.list.get(state.certs.site_selector_index) else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "当前: （无站点）",
                 Style::default().fg(theme::FG_DIM),
-            )),
-            Line::from(Span::styled(
-                "先到「站点」创建并启用站点",
-                Style::default().fg(theme::FG_DIM),
-            )),
-        ],
+            ))),
+            area,
+        );
+        return;
     };
-    frame.render_widget(
-        Paragraph::new(detail_lines).wrap(Wrap { trim: false }),
-        chunks[0],
-    );
 
-    render_action_group(
-        frame,
-        chunks[1],
-        state,
-        "当前站点操作",
-        &CertsAction::SITE_ACTIONS,
-        CertsFocus::SiteActions,
-    );
-    render_action_group(
-        frame,
-        chunks[2],
-        state,
-        "全局维护",
-        &CertsAction::GLOBAL_ACTIONS,
-        CertsFocus::GlobalActions,
-    );
+    let certs = certs_for_site(state, site);
+    let domains = if site.all_domains.is_empty() {
+        "(无 server_name)".to_string()
+    } else {
+        truncate(&site.all_domains.join(", "), 42)
+    };
+    let cert_part = if certs.is_empty() {
+        "无证书".to_string()
+    } else {
+        certs_label(&certs)
+    };
+    let status = site_status_span(&certs);
+    let hint = if state.certs.focused == CertsFocus::Table
+        && state.focus == FocusArea::Content
+        && state.certs.running.is_none()
+    {
+        "  [Enter] 申请证书"
+    } else {
+        ""
+    };
+
+    let line = Line::from(vec![
+        Span::styled("当前: ", Style::default().fg(theme::FG_DIM)),
+        Span::styled(
+            site.name.clone(),
+            Style::default()
+                .fg(theme::FG_HINT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(" · {} · {} · ", domains, cert_part)),
+        status,
+        Span::styled(hint, Style::default().fg(theme::FG_DIM)),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
-fn render_action_group(
-    frame: &mut Frame,
-    area: Rect,
-    state: &AppState,
-    title: &'static str,
-    actions: &[CertsAction],
-    focus_area: CertsFocus,
-) {
-    let focused_group = state.certs.focused == focus_area;
+fn render_global_actions(frame: &mut Frame, area: Rect, state: &AppState) {
+    let focused_group = state.focus == FocusArea::Content
+        && state.certs.focused == CertsFocus::GlobalActions;
     let readonly = state.run_mode.is_readonly() || !state.ctx.deps().certbot;
+
     let title_style = if focused_group {
         Style::default()
             .fg(theme::FG_HINT)
@@ -239,30 +279,30 @@ fn render_action_group(
     } else {
         Style::default().fg(theme::FG_DIM)
     };
+
     let cols = Layout::horizontal(
-        std::iter::once(Constraint::Length(14))
+        std::iter::once(Constraint::Length(12))
             .chain(
-                actions
+                CertsAction::GLOBAL_ACTIONS
                     .iter()
-                    .map(|_| Constraint::Percentage((100usize / actions.len().max(1)) as u16)),
+                    .map(|_| Constraint::Percentage(22)),
             )
             .collect::<Vec<_>>(),
     )
     .split(area);
 
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(format!("{}:", title), title_style))),
+        Paragraph::new(Line::from(Span::styled("全局维护", title_style))),
         cols[0],
     );
 
-    for (i, action) in actions.iter().enumerate() {
+    for (i, action) in CertsAction::GLOBAL_ACTIONS.iter().enumerate() {
         let focused = focused_group && state.certs.action_focus == *action;
         let busy = state.certs.running == Some(*action);
         let disabled = readonly
             && matches!(
                 action,
-                CertsAction::Request
-                    | CertsAction::RenewAll
+                CertsAction::RenewAll
                     | CertsAction::InstallDeployHook
                     | CertsAction::DeleteOrphan
             );
@@ -280,7 +320,7 @@ fn render_action_group(
         } else if hook_ok {
             "✓ 钩子已就绪".to_string()
         } else if no_cleanup_candidates {
-            "无多余证书".to_string()
+            "无多余".to_string()
         } else {
             action.label().to_string()
         };
@@ -298,10 +338,13 @@ fn render_action_group(
         } else {
             format!("[ {} ]", label)
         };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(surrounded, style))),
-            cols[i + 1],
-        );
+        // 垂直居中一点：第二行有内容时第一行空
+        let lines = if area.height >= 2 {
+            vec![Line::from(""), Line::from(Span::styled(surrounded, style))]
+        } else {
+            vec![Line::from(Span::styled(surrounded, style))]
+        };
+        frame.render_widget(Paragraph::new(lines), cols[i + 1]);
     }
 }
 
@@ -360,138 +403,23 @@ fn site_status_span<'a>(certs: &[&CertWithSite]) -> Span<'a> {
     let Some(best) = certs.first().copied() else {
         return Span::styled("无证书", Style::default().fg(theme::FG_DIM));
     };
-    render_status_span(best)
-}
-
-fn selected_site_lines(state: &AppState, site: &Site) -> Vec<Line<'static>> {
-    let certs = certs_for_site(state, site);
-    let focus_hint = if state.certs.focused == CertsFocus::Table {
-        "  [Enter] 申请证书"
-    } else {
-        ""
-    };
-    let domains = if site.all_domains.is_empty() {
-        "(无 server_name)".to_string()
-    } else {
-        site.all_domains.join(", ")
-    };
-    let cert_summary = if certs.is_empty() {
-        "证书: 未发现匹配证书".to_string()
-    } else {
-        let mut parts = Vec::new();
-        for (idx, cert) in certs.iter().take(2).enumerate() {
-            let days = cert
-                .cert
-                .days_left
-                .map(|days| format!("{days}天"))
-                .unwrap_or_else(|| "未知".to_string());
-            let overlap = if idx == 0 || cert.cert.domains.len() == 1 {
-                ""
-            } else {
-                "/重叠"
+    match (best.cert.level, best.cert.days_left) {
+        (Some(level), Some(days)) => {
+            let style = match level {
+                CertLevel::Ok => Style::default().fg(theme::FG_OK),
+                CertLevel::Warning => Style::default().fg(theme::FG_WARN),
+                CertLevel::Critical => Style::default().fg(theme::FG_ERR),
+                CertLevel::Expired => Style::default().fg(theme::FG_ERR),
             };
-            parts.push(format!("{}({}{})", cert.cert.name, days, overlap));
+            Span::styled(format!("{} {} 天", level.glyph(), days), style)
         }
-        if certs.len() > 2 {
-            parts.push(format!("+{}", certs.len() - 2));
-        }
-        format!("证书: {}", parts.join("  "))
-    };
-    let status_span = site_status_span(&certs);
-
-    vec![
-        Line::from(vec![
-            Span::styled("当前站点: ", Style::default().fg(theme::FG_DIM)),
-            Span::styled(
-                site.name.clone(),
-                Style::default()
-                    .fg(theme::FG_HINT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!("   域名: {}{}", domains, focus_hint)),
-        ]),
-        Line::from(vec![
-            Span::raw(cert_summary),
-            Span::raw("   状态: "),
-            status_span,
-        ]),
-    ]
-}
-
-fn render_auto_renew(frame: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(theme::BORDER))
-        .title(Span::styled(
-            " 自动续签状态 ",
-            Style::default().fg(theme::FG_PATH),
-        ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let mut lines: Vec<Line> = Vec::new();
-    match &state.certs.auto_renew {
-        Some(s) => {
-            let timer_glyph = if s.timer_active { "●" } else { "○" };
-            let timer_style = if s.timer_active {
-                Style::default().fg(theme::FG_OK)
-            } else {
-                Style::default().fg(theme::FG_WARN)
-            };
-            let mut timer_line = vec![
-                Span::styled(format!("{} ", timer_glyph), timer_style),
-                Span::raw(format!("{}    ", s.timer_unit)),
-                Span::styled(
-                    if s.timer_active {
-                        "已启用"
-                    } else {
-                        "未启用"
-                    },
-                    timer_style,
-                ),
-            ];
-            if let Some(next) = &s.next_run {
-                timer_line.push(Span::styled(
-                    format!("    下次执行：{}", next),
-                    Style::default().fg(theme::FG_DIM),
-                ));
-            }
-            lines.push(Line::from(timer_line));
-
-            let hook_glyph = if s.deploy_hook_present { "✓" } else { "✗" };
-            let hook_style = if s.deploy_hook_present {
-                Style::default().fg(theme::FG_OK)
-            } else {
-                Style::default().fg(theme::FG_WARN)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{} ", hook_glyph), hook_style),
-                Span::raw("deploy hook   "),
-                Span::styled(
-                    s.deploy_hook_path.clone(),
-                    Style::default().fg(theme::FG_DIM),
-                ),
-            ]));
-            for tip in s.advice() {
-                lines.push(Line::from(Span::styled(
-                    format!("  • {}", tip),
-                    Style::default().fg(theme::FG_HINT),
-                )));
-            }
-        }
-        None => {
-            lines.push(Line::from(Span::styled(
-                "（尚未检查）",
-                Style::default().fg(theme::FG_DIM),
-            )));
-        }
+        _ => Span::styled("? 未知", Style::default().fg(theme::FG_DIM)),
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_output(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::BORDER))
         .title(Span::styled(
             " 操作输出 ",

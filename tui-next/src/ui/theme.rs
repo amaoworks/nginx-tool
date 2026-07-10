@@ -21,7 +21,6 @@ pub const BG_FOOTER: Color = Color::DarkGray;
 pub const FG_FOOTER: Color = Color::White;
 
 pub const BORDER: Color = Color::DarkGray;
-#[allow(dead_code)]
 pub const BORDER_FOCUS: Color = Color::Cyan;
 
 pub const FG_HINT: Color = Color::Cyan;

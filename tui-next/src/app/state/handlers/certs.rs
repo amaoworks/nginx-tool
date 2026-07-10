@@ -21,11 +21,7 @@ impl AppState {
             KeyCode::Tab => {
                 self.certs.focused = match self.certs.focused {
                     CertsFocus::Table => {
-                        self.certs.action_focus = CertsAction::Request;
-                        CertsFocus::SiteActions
-                    }
-                    CertsFocus::SiteActions => {
-                        self.certs.action_focus = CertsAction::RenewAll;
+                        self.certs.ensure_global_action_focus();
                         CertsFocus::GlobalActions
                     }
                     CertsFocus::GlobalActions => CertsFocus::Table,
@@ -47,29 +43,21 @@ impl AppState {
             CertsFocus::Table => match k.code {
                 KeyCode::Up => self.certs_site_selector_move(-1),
                 KeyCode::Down => self.certs_site_selector_move(1),
+                // 站点级：表上 Enter 直接申请当前站点证书
                 KeyCode::Enter => {
-                    self.certs.focused = CertsFocus::SiteActions;
                     self.certs.action_focus = CertsAction::Request;
+                    self.request_certs_action();
                 }
-                _ => {}
-            },
-            CertsFocus::SiteActions => match k.code {
-                KeyCode::Up => self.certs.focused = CertsFocus::Table,
-                KeyCode::Down => {
-                    self.certs.focused = CertsFocus::GlobalActions;
-                    self.certs.action_focus = CertsAction::RenewAll;
-                }
-                KeyCode::Enter => self.request_certs_action(),
                 _ => {}
             },
             CertsFocus::GlobalActions => match k.code {
-                KeyCode::Left => self.certs.cycle_action(-1),
-                KeyCode::Right => self.certs.cycle_action(1),
-                KeyCode::Up => {
-                    self.certs.focused = CertsFocus::SiteActions;
-                    self.certs.action_focus = CertsAction::Request;
+                KeyCode::Left => self.certs.cycle_global_action(-1),
+                KeyCode::Right => self.certs.cycle_global_action(1),
+                KeyCode::Up => self.certs.focused = CertsFocus::Table,
+                KeyCode::Enter => {
+                    self.certs.ensure_global_action_focus();
+                    self.request_certs_action();
                 }
-                KeyCode::Enter => self.request_certs_action(),
                 _ => {}
             },
         }
@@ -107,7 +95,7 @@ impl AppState {
                 }
                 let Some(site) = self.sites.list.get(self.certs.site_selector_index) else {
                     self.notification = Some(Notification::failure(
-                        "请先在站点选择器中选定一个有 server_name 的站点",
+                        "请先选定一个有 server_name 的站点",
                     ));
                     return;
                 };
@@ -172,7 +160,7 @@ impl AppState {
                     .as_ref()
                     .is_some_and(|s| s.deploy_hook_present)
                 {
-                    self.notification = Some(Notification::info("deploy hook 已安装".to_string()));
+                    self.notification = Some(Notification::info("重载钩子已安装".to_string()));
                     return;
                 }
                 self.modal = Some(crate::ui::modal::Modal::confirm_install_deploy_hook());

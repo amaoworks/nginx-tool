@@ -3,14 +3,12 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-/// 证书页焦点
+/// 证书页焦点（仅两区：站点表 / 全局维护）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CertsFocus {
-    /// 站点列表（↑↓ 选中站点）
+    /// 站点列表（↑↓ 选中站点，Enter 申请证书）
     #[default]
     Table,
-    /// 当前站点操作（申请证书）
-    SiteActions,
     /// 全局维护操作（续期 / 自动续签 / hook / 清理）
     GlobalActions,
 }
@@ -27,14 +25,7 @@ pub enum CertsAction {
 }
 
 impl CertsAction {
-    pub const ALL: [CertsAction; 5] = [
-        CertsAction::Request,
-        CertsAction::RenewAll,
-        CertsAction::CheckAutoRenew,
-        CertsAction::InstallDeployHook,
-        CertsAction::DeleteOrphan,
-    ];
-    pub const SITE_ACTIONS: [CertsAction; 1] = [CertsAction::Request];
+    /// 底部「全局维护」按钮（与选中站点无关）
     pub const GLOBAL_ACTIONS: [CertsAction; 4] = [
         CertsAction::RenewAll,
         CertsAction::CheckAutoRenew,
@@ -44,11 +35,11 @@ impl CertsAction {
 
     pub fn label(&self) -> &'static str {
         match self {
-            CertsAction::Request => "为当前站点申请证书",
-            CertsAction::RenewAll => "续期全部证书",
-            CertsAction::CheckAutoRenew => "检查自动续期",
-            CertsAction::InstallDeployHook => "安装续期后重载钩子",
-            CertsAction::DeleteOrphan => "清理多余证书",
+            CertsAction::Request => "申请证书",
+            CertsAction::RenewAll => "续期全部",
+            CertsAction::CheckAutoRenew => "检查续签",
+            CertsAction::InstallDeployHook => "安装重载钩子",
+            CertsAction::DeleteOrphan => "清理多余",
         }
     }
 }
@@ -67,7 +58,7 @@ pub struct CertsState {
     pub focused: CertsFocus,
     /// 当前选中的站点索引（依赖 SitesState.list）
     pub site_selector_index: usize,
-    /// 操作按钮当前焦点
+    /// 全局维护按钮当前焦点
     pub action_focus: CertsAction,
     /// 操作输出区，展示 certbot 流式输出
     pub output: Vec<String>,
@@ -88,12 +79,8 @@ pub struct CertsState {
 }
 
 impl CertsState {
-    pub fn cycle_action(&mut self, delta: i32) {
-        let actions = match self.focused {
-            CertsFocus::Table => &CertsAction::ALL[..],
-            CertsFocus::SiteActions => &CertsAction::SITE_ACTIONS[..],
-            CertsFocus::GlobalActions => &CertsAction::GLOBAL_ACTIONS[..],
-        };
+    pub fn cycle_global_action(&mut self, delta: i32) {
+        let actions = &CertsAction::GLOBAL_ACTIONS;
         let len = actions.len() as i32;
         let cur = actions
             .iter()
@@ -102,6 +89,13 @@ impl CertsState {
             .unwrap_or(0);
         let next = (cur + delta).rem_euclid(len) as usize;
         self.action_focus = actions[next];
+    }
+
+    /// 确保全局焦点落在 GLOBAL_ACTIONS 内（从表切过来时可能还是 Request）
+    pub fn ensure_global_action_focus(&mut self) {
+        if !CertsAction::GLOBAL_ACTIONS.contains(&self.action_focus) {
+            self.action_focus = CertsAction::RenewAll;
+        }
     }
 
     pub fn push_output(&mut self, lines: impl IntoIterator<Item = String>) {
