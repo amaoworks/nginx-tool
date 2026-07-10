@@ -8,6 +8,13 @@
 
 - 改进 Nginx 配置备份与还原流程（`fix: improve nginx backup and restore`）。
 
+### 改进
+
+- 拆分 `src/app/state.rs` 为按页面划分的 `src/app/state/` 模块（可维护性）
+- 进入站点编辑时运行配置健康扫描并提示（`config_health`）
+- 移除空壳 `domain/command` 模块
+- README 补全站点排序（`o`/`p`）与日志搜索键位
+
 ---
 
 ## 2026-06-03 — v1.2.4 站点列表排序与日志搜索增强

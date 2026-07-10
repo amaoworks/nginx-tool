@@ -55,9 +55,21 @@ ngtool --version
 - `n` 新建
 - `Enter` 编辑
 - `s` 启用 / 停用
+- `o` 切换排序字段（状态 / 名称 / 类型 / SSL）
+- `p` 切换升序 / 降序
 - `d` 删除
 - `c` 申请证书
 - `l` 查看日志
+- `r` 刷新
+
+日志查看：
+
+- `←→` / `Tab` 切换站点与日志类型（access / error）
+- `↑↓←→` / `PgUp` / `PgDn` / `Home` / `End` 滚动
+- `Space` 跟随 / 暂停尾部
+- `/` 搜索关键字（匹配行高亮，显示 `当前/总数`）
+- `n` / `N` 下一个 / 上一个匹配
+- `c` 清屏
 
 新建站点：
 
@@ -124,7 +136,8 @@ ngtool --version
 
 ```bash
 cd tui-next
-cargo test
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
 cargo run -- --readonly
 ```
 

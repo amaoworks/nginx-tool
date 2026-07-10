@@ -1,5 +1,10 @@
-//! Nginx 配置健康检查模块
-//! 检测并修复常见的配置问题，如重复的 server 块、缺失的 HTTPS 配置等
+//! Nginx 配置健康检查。
+//!
+//! 提供对站点 conf 的静态扫描与内容级修复建议（重复 HTTP server 块、
+//! 有证书却缺 HTTPS、仅 HTTPS 却缺 HTTP 跳转等）。
+//!
+//! - `scan_config_file`：只读扫描，已在进入站点编辑时给出提示
+//! - `fix_config_file`：返回修复后的文本，**不写盘**；完整自动修复 UI 仍待接入
 
 use std::path::Path;
 

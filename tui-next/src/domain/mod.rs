@@ -2,7 +2,6 @@
 
 pub mod backup;
 pub mod cert;
-pub mod command;
 pub mod config_health;
 pub mod dashboard;
 pub mod log;
