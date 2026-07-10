@@ -4,9 +4,15 @@
 
 ## Unreleased
 
+（暂无）
+
+---
+
+## 2026-07-10 — v1.2.5 状态模块拆分、配置健康修复与文案收敛
+
 ### 修复
 
-- 改进 Nginx 配置备份与还原流程（`fix: improve nginx backup and restore`）。
+- 改进 Nginx 配置备份与还原流程
 
 ### 改进
 
@@ -17,6 +23,11 @@
 - 侧栏/页脚/弹窗/按钮文案收敛为更短、更直白的中文
 - README 补全站点排序（`o`/`p`）与日志搜索键位
 - 同步 `doc/risks.md`、`doc/design.md` 与当前实现状态
+- 新增日常 CI（`cargo test` + `clippy`）
+
+### 版本
+
+- `Cargo.toml` 版本 `1.2.5`，与 tag `v1.2.5` 对齐
 
 ---
 
