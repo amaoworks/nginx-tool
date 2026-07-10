@@ -12,6 +12,10 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use sha2::{Digest, Sha256};
 
+const MAX_ARCHIVE_ENTRIES: usize = 4096;
+const MAX_ENTRY_SIZE: u64 = 16 * 1024 * 1024;
+const MAX_ARCHIVE_SIZE: u64 = 64 * 1024 * 1024;
+
 /// 把 `entries` 中的 (虚拟路径, 文件内容字节) 打成 tar.gz 写入 `out_path`。
 /// `entries` 的顺序即是 archive 中的顺序；调用方自行决定 manifest 应当先于其他文件出现。
 pub fn create_tar_gz(out_path: &Path, entries: &[(PathBuf, Vec<u8>)]) -> std::io::Result<()> {
@@ -39,10 +43,33 @@ pub fn read_tar_gz(path: &Path) -> std::io::Result<Vec<(PathBuf, Vec<u8>)>> {
     let dec = GzDecoder::new(file);
     let mut tar = tar::Archive::new(dec);
     let mut out = Vec::new();
+    let mut total_size = 0_u64;
     for entry in tar.entries()? {
         let mut entry = entry?;
+        if out.len() >= MAX_ARCHIVE_ENTRIES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "archive entry count exceeds limit",
+            ));
+        }
+        let size = entry.size();
+        if size > MAX_ENTRY_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "archive entry size exceeds limit",
+            ));
+        }
+        total_size = total_size.checked_add(size).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "archive size overflow")
+        })?;
+        if total_size > MAX_ARCHIVE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "archive total size exceeds limit",
+            ));
+        }
         let path = entry.path()?.into_owned();
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(size as usize);
         entry.read_to_end(&mut bytes)?;
         out.push((path, bytes));
     }

@@ -1,14 +1,17 @@
-//! 备份与还原领域模型，对应 design.md 视图 6 / architecture.md §11.7。
+//! Nginx 配置备份与还原领域模型。
 //!
-//! 范围限定（架构 §11.7.1）：
-//! - `/etc/nginx/nginx.conf`
-//! - `/etc/nginx/sites-available/*.conf`
-//! - `/etc/nginx/sites-enabled/` 启用关系（仅记录链接的 stem）
-//!
-//! **不**整目录覆盖：`conf.d/`、`snippets/`、`modules-enabled/` 等不会被备份/还原触及。
+//! 管理范围：
+//! - `/etc/nginx` 根目录下的普通文件与符号链接（含 `nginx.conf`、`mime.types` 等）
+//! - `sites-available/`
+//! - `sites-enabled/`
+//! - `conf.d/`
+//! - `snippets/`
+//! - `stream-conf.d/`
+//! - `modules-enabled/`
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,16 +24,22 @@ use crate::infra::archive::{create_tar_gz, read_tar_gz, sha256_hex};
 use crate::infra::audit::AuditResult;
 use crate::infra::AppContext;
 
-/// 当前 manifest schema 版本。schema 不兼容的备份将被拒绝还原。
-pub const MANIFEST_SCHEMA: u32 = 1;
+/// schema 2 扩大到完整的 Nginx 配置范围，并记录文件模式与符号链接。
+pub const MANIFEST_SCHEMA: u32 = 2;
 
-/// 备份来源。manifest 内 `source` 字段。
+const MANAGED_DIRS: &[&str] = &[
+    "sites-available",
+    "sites-enabled",
+    "conf.d",
+    "snippets",
+    "stream-conf.d",
+    "modules-enabled",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BackupSource {
-    /// 用户手动创建
     Manual,
-    /// 还原前自动创建
     PreRestore,
 }
 
@@ -43,25 +52,32 @@ impl BackupSource {
     }
 }
 
-/// 备份范围记录。还原时按此精确替换。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManifestFile {
+    pub path: String,
+    pub mode: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManifestSymlink {
+    pub path: String,
+    pub target: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ManifestScope {
-    /// 是否包含 nginx.conf
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub nginx_conf: bool,
-    /// 备份内 sites-available 的 .conf 文件名（不含路径）
     #[serde(default)]
-    pub sites_available: Vec<String>,
-    /// 备份时刻 sites-enabled 中实际启用的站点名（去掉 .conf 后缀）
+    pub managed_directories: Vec<String>,
     #[serde(default)]
-    pub sites_enabled: Vec<String>,
+    pub directories: Vec<String>,
+    #[serde(default)]
+    pub files: Vec<ManifestFile>,
+    #[serde(default)]
+    pub symlinks: Vec<ManifestSymlink>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
-/// 备份元数据。从 archive 中 `manifest.toml` 解析。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub schema_version: u32,
@@ -72,19 +88,17 @@ pub struct Manifest {
     pub source: BackupSource,
     #[serde(default)]
     pub scope: ManifestScope,
-    /// 文件相对路径 → "sha256:<hex>"
+    /// 文件相对路径 → `sha256:<hex>`。
     #[serde(default)]
     pub checksums: BTreeMap<String, String>,
 }
 
-/// UI 展示用的备份条目。
 #[derive(Debug, Clone)]
 pub struct Backup {
     pub path: PathBuf,
     pub name: String,
     pub size: u64,
     pub mtime: SystemTime,
-    /// `None` 表示无 manifest 或解析失败 → 只展示不可还原（design 子模式）。
     pub manifest: Option<Manifest>,
 }
 
@@ -107,7 +121,15 @@ impl Backup {
     pub fn created_at_label(&self) -> String {
         self.manifest
             .as_ref()
-            .map(|m| m.created_at.clone())
+            .map(|m| {
+                DateTime::parse_from_rfc3339(&m.created_at)
+                    .map(|dt| {
+                        dt.with_timezone(&Local)
+                            .format("%Y-%m-%d %H:%M:%S")
+                            .to_string()
+                    })
+                    .unwrap_or_else(|_| m.created_at.clone())
+            })
             .unwrap_or_else(|| {
                 let dt: DateTime<Local> = self.mtime.into();
                 dt.format("%Y-%m-%d %H:%M:%S").to_string()
@@ -115,26 +137,25 @@ impl Backup {
     }
 }
 
-/// 创建备份的输入。
 #[derive(Debug, Clone)]
 pub struct CreateBackupInput {
     pub source: BackupSource,
 }
 
-/// 还原备份前的影响摘要（execution.md P9-8）。
 #[derive(Debug, Clone)]
 pub struct RestoreImpact {
-    /// 将覆盖的文件相对路径
     pub will_overwrite: Vec<String>,
-    /// 将启用的站点名（当前未启用，备份中启用）
     pub will_enable: Vec<String>,
-    /// 将停用的站点名（当前启用，备份中未启用）
     pub will_disable: Vec<String>,
-    /// 备份中标记启用但 sites-available 内不存在的站点（理论上不应发生）
     pub missing_in_backup: Vec<String>,
 }
 
-/// 列出 `~/.local/ngtool/backups/` 中的全部备份。失败时返回错误，UI 可展示。
+#[derive(Debug, Clone)]
+struct Snapshot {
+    manifest: Manifest,
+    files: BTreeMap<String, Vec<u8>>,
+}
+
 pub fn list_backups(ctx: &AppContext) -> Result<Vec<Backup>, NgToolError> {
     let dir = ctx.paths.backups.clone();
     if !dir.is_dir() {
@@ -169,50 +190,42 @@ pub fn list_backups(ctx: &AppContext) -> Result<Vec<Backup>, NgToolError> {
             manifest,
         });
     }
-    // 按 mtime 倒序（最新在前）
     out.sort_by_key(|b| std::cmp::Reverse(b.mtime));
     Ok(out)
 }
 
 fn read_manifest(archive: &Path) -> Result<Manifest, String> {
     let entries = read_tar_gz(archive).map_err(|e| e.to_string())?;
-    for (path, bytes) in entries {
-        if path == Path::new("manifest.toml") {
-            let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
-            return toml::from_str::<Manifest>(text).map_err(|e| e.to_string());
-        }
-    }
-    Err("manifest.toml 缺失".into())
+    let bytes = entries
+        .into_iter()
+        .find(|(path, _)| path == Path::new("manifest.toml"))
+        .map(|(_, bytes)| bytes)
+        .ok_or_else(|| "manifest.toml 缺失".to_string())?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+    toml::from_str(text).map_err(|e| e.to_string())
 }
 
-/// 创建备份。范围限定到架构 §11.7.1。失败时不留下半成品。
 pub async fn create_backup(
     ctx: Arc<AppContext>,
     input: CreateBackupInput,
 ) -> Result<PathBuf, NgToolError> {
     let started = Instant::now();
-    let nginx_root = ctx
-        .probe
-        .sites_available
-        .parent()
-        .unwrap_or_else(|| ctx.probe.sites_available.as_path())
-        .to_path_buf();
-    let nginx_conf_path = nginx_root.join("nginx.conf");
-    let avail_dir = ctx.probe.sites_available.clone();
-    let enabled_dir = ctx.probe.sites_enabled.clone();
+    let nginx_root = nginx_root(&ctx);
     let backups_dir = ctx.paths.backups.clone();
-
     let nginx_version = ctx
         .nginx
         .version()
         .await
         .unwrap_or_else(|_| "unknown".into());
     let hostname = read_hostname();
-    let now = chrono::Local::now();
-    let timestamp = now.format("%Y%m%d-%H%M%S").to_string();
-    let stem = format!("nginx-config-{}", timestamp);
-    let archive_name = format!("{}.tar.gz", stem);
-    let final_path = backups_dir.join(&archive_name);
+    let now = Local::now();
+    let timestamp = now.format("%Y%m%d-%H%M%S-%3f").to_string();
+    let prefix = match input.source {
+        BackupSource::Manual => "nginx-config",
+        BackupSource::PreRestore => "pre-restore",
+    };
+    let stem = format!("{}-{}", prefix, timestamp);
+    let final_path = backups_dir.join(format!("{}.tar.gz", stem));
     let tmp_path = ctx
         .paths
         .tmp
@@ -220,70 +233,29 @@ pub async fn create_backup(
     let source = input.source;
 
     let result = tokio::task::spawn_blocking(move || -> Result<PathBuf, NgToolError> {
-        let mut entries: Vec<(PathBuf, Vec<u8>)> = Vec::new();
-        let mut checksums: BTreeMap<String, String> = BTreeMap::new();
+        let mut scope = ManifestScope {
+            managed_directories: MANAGED_DIRS.iter().map(|s| (*s).to_string()).collect(),
+            ..ManifestScope::default()
+        };
+        let mut entries = Vec::new();
+        let mut checksums = BTreeMap::new();
 
-        // 1) nginx.conf
-        let mut has_nginx_conf = false;
-        if nginx_conf_path.is_file() {
-            let bytes =
-                std::fs::read(&nginx_conf_path).map_err(|e| NgToolError::FileOperationFailed {
-                    path: nginx_conf_path.clone(),
-                    message: e.to_string(),
-                })?;
-            checksums.insert(
-                "nginx.conf".into(),
-                format!("sha256:{}", sha256_hex(&bytes)),
-            );
-            entries.push((PathBuf::from("nginx.conf"), bytes));
-            has_nginx_conf = true;
-        }
+        let conf = nginx_root.join("nginx.conf");
+        collect_root_files(&nginx_root, &mut scope, &mut entries, &mut checksums)?;
+        scope.nginx_conf = conf.is_file();
 
-        // 2) sites-available/*.conf
-        let mut sites_available: Vec<String> = Vec::new();
-        if avail_dir.is_dir() {
-            let mut names: Vec<_> = std::fs::read_dir(&avail_dir)
-                .map_err(|e| NgToolError::FileOperationFailed {
-                    path: avail_dir.clone(),
-                    message: e.to_string(),
-                })?
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("conf"))
-                .collect();
-            names.sort_by_key(|e| e.file_name());
-            for entry in names {
-                let path = entry.path();
-                let file_name = path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                if file_name.is_empty() {
-                    continue;
-                }
-                let bytes = std::fs::read(&path).map_err(|e| NgToolError::FileOperationFailed {
-                    path: path.clone(),
-                    message: e.to_string(),
-                })?;
-                let rel = format!("sites-available/{}", file_name);
-                checksums.insert(rel.clone(), format!("sha256:{}", sha256_hex(&bytes)));
-                entries.push((PathBuf::from(rel), bytes));
-                sites_available.push(file_name);
+        for dir in MANAGED_DIRS {
+            let path = nginx_root.join(dir);
+            if path.is_dir() {
+                collect_directory(&nginx_root, &path, &mut scope, &mut entries, &mut checksums)?;
             }
         }
 
-        // 3) sites-enabled.toml（仅记录启用关系）
-        let sites_enabled: Vec<String> = collect_enabled_stems(&enabled_dir).unwrap_or_default();
-        let enabled_doc = format!(
-            "# 自动生成：备份时刻的启用关系\nsites = {:?}\n",
-            sites_enabled
-        );
-        entries.push((
-            PathBuf::from("sites-enabled.toml"),
-            enabled_doc.as_bytes().to_vec(),
-        ));
+        scope.directories.sort();
+        scope.directories.dedup();
+        scope.files.sort_by(|a, b| a.path.cmp(&b.path));
+        scope.symlinks.sort_by(|a, b| a.path.cmp(&b.path));
 
-        // 4) manifest.toml（必须放在最前以方便快速预览）
         let manifest = Manifest {
             schema_version: MANIFEST_SCHEMA,
             created_at: now.to_rfc3339(),
@@ -291,11 +263,7 @@ pub async fn create_backup(
             nginx_version,
             ngtool_version: crate::version::APP_VERSION.to_string(),
             source,
-            scope: ManifestScope {
-                nginx_conf: has_nginx_conf,
-                sites_available: sites_available.clone(),
-                sites_enabled: sites_enabled.clone(),
-            },
+            scope,
             checksums,
         };
         let manifest_bytes =
@@ -303,49 +271,52 @@ pub async fn create_backup(
                 path: tmp_path.clone(),
                 message: format!("manifest 序列化失败：{}", e),
             })?;
-        // manifest 应当出现在 archive 头部
         entries.insert(0, (PathBuf::from("manifest.toml"), manifest_bytes.into()));
 
-        // 5) 写入 tmp 后原子 rename 到 backups/
         if let Some(parent) = tmp_path.parent() {
-            std::fs::create_dir_all(parent).ok();
+            std::fs::create_dir_all(parent).map_err(|e| NgToolError::FileOperationFailed {
+                path: parent.to_path_buf(),
+                message: e.to_string(),
+            })?;
         }
         if let Some(parent) = final_path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        create_tar_gz(&tmp_path, &entries).map_err(|e| NgToolError::FileOperationFailed {
-            path: tmp_path.clone(),
-            message: e.to_string(),
-        })?;
-
-        // 校验 archive 可读（架构 §11.7.3 步骤 6）
-        let _ = read_tar_gz(&tmp_path).map_err(|e| NgToolError::FileOperationFailed {
-            path: tmp_path.clone(),
-            message: format!("打包后回读失败：{}", e),
-        })?;
-
-        std::fs::rename(&tmp_path, &final_path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp_path);
-            NgToolError::FileOperationFailed {
-                path: final_path.clone(),
+            std::fs::create_dir_all(parent).map_err(|e| NgToolError::FileOperationFailed {
+                path: parent.to_path_buf(),
                 message: e.to_string(),
-            }
-        })?;
-
-        Ok(final_path)
+            })?;
+        }
+        let write_result = (|| {
+            create_tar_gz(&tmp_path, &entries).map_err(|e| NgToolError::FileOperationFailed {
+                path: tmp_path.clone(),
+                message: e.to_string(),
+            })?;
+            let snapshot = load_snapshot_sync(&tmp_path)?;
+            validate_snapshot(&snapshot)?;
+            std::fs::rename(&tmp_path, &final_path).map_err(|e| {
+                NgToolError::FileOperationFailed {
+                    path: final_path.clone(),
+                    message: e.to_string(),
+                }
+            })?;
+            Ok(final_path.clone())
+        })();
+        if write_result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+        write_result
     })
     .await;
 
     match result {
-        Ok(Ok(p)) => {
+        Ok(Ok(path)) => {
             ctx.audit.log(
                 "backup.create",
-                p.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
                 AuditResult::Success,
                 started.elapsed().as_millis() as u64,
-                json!({"source": format!("{:?}", source)}),
+                json!({"source": source.label(), "schema": MANIFEST_SCHEMA}),
             );
-            Ok(p)
+            Ok(path)
         }
         Ok(Err(e)) => {
             ctx.audit.log(
@@ -364,25 +335,123 @@ pub async fn create_backup(
     }
 }
 
-fn collect_enabled_stems(enabled_dir: &Path) -> std::io::Result<Vec<String>> {
-    if !enabled_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(enabled_dir)? {
-        let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        if stem.is_empty() {
-            continue;
+fn collect_root_files(
+    nginx_root: &Path,
+    scope: &mut ManifestScope,
+    entries: &mut Vec<(PathBuf, Vec<u8>)>,
+    checksums: &mut BTreeMap<String, String>,
+) -> Result<(), NgToolError> {
+    let mut children: Vec<_> = std::fs::read_dir(nginx_root)
+        .map_err(|e| NgToolError::FileOperationFailed {
+            path: nginx_root.to_path_buf(),
+            message: e.to_string(),
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    children.sort_by_key(|entry| entry.file_name());
+    for child in children {
+        let path = child.path();
+        let meta =
+            std::fs::symlink_metadata(&path).map_err(|e| NgToolError::FileOperationFailed {
+                path: path.clone(),
+                message: e.to_string(),
+            })?;
+        if meta.file_type().is_symlink() {
+            let target =
+                std::fs::read_link(&path).map_err(|e| NgToolError::FileOperationFailed {
+                    path: path.clone(),
+                    message: e.to_string(),
+                })?;
+            scope.symlinks.push(ManifestSymlink {
+                path: relative_string(nginx_root, &path)?,
+                target: target.to_string_lossy().into_owned(),
+            });
+        } else if meta.is_file() {
+            add_file(nginx_root, &path, scope, entries, checksums)?;
         }
-        // 接受真实文件 + 符号链接（dangling 也算启用关系）
-        if path.symlink_metadata().is_ok() {
-            out.push(stem.to_string());
+    }
+    Ok(())
+}
+
+fn collect_directory(
+    nginx_root: &Path,
+    dir: &Path,
+    scope: &mut ManifestScope,
+    entries: &mut Vec<(PathBuf, Vec<u8>)>,
+    checksums: &mut BTreeMap<String, String>,
+) -> Result<(), NgToolError> {
+    let rel_dir = relative_string(nginx_root, dir)?;
+    scope.directories.push(rel_dir);
+    let mut children: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|e| NgToolError::FileOperationFailed {
+            path: dir.to_path_buf(),
+            message: e.to_string(),
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    children.sort_by_key(|e| e.file_name());
+
+    for child in children {
+        let path = child.path();
+        let meta =
+            std::fs::symlink_metadata(&path).map_err(|e| NgToolError::FileOperationFailed {
+                path: path.clone(),
+                message: e.to_string(),
+            })?;
+        if meta.file_type().is_symlink() {
+            let target =
+                std::fs::read_link(&path).map_err(|e| NgToolError::FileOperationFailed {
+                    path: path.clone(),
+                    message: e.to_string(),
+                })?;
+            scope.symlinks.push(ManifestSymlink {
+                path: relative_string(nginx_root, &path)?,
+                target: target.to_string_lossy().into_owned(),
+            });
+        } else if meta.is_dir() {
+            collect_directory(nginx_root, &path, scope, entries, checksums)?;
+        } else if meta.is_file() {
+            add_file(nginx_root, &path, scope, entries, checksums)?;
         }
     }
-    out.sort();
-    Ok(out)
+    Ok(())
+}
+
+fn add_file(
+    nginx_root: &Path,
+    path: &Path,
+    scope: &mut ManifestScope,
+    entries: &mut Vec<(PathBuf, Vec<u8>)>,
+    checksums: &mut BTreeMap<String, String>,
+) -> Result<(), NgToolError> {
+    let bytes = std::fs::read(path).map_err(|e| NgToolError::FileOperationFailed {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    let meta = std::fs::metadata(path).map_err(|e| NgToolError::FileOperationFailed {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    let rel = relative_string(nginx_root, path)?;
+    checksums.insert(rel.clone(), format!("sha256:{}", sha256_hex(&bytes)));
+    scope.files.push(ManifestFile {
+        path: rel.clone(),
+        mode: meta.permissions().mode() & 0o7777,
+    });
+    entries.push((PathBuf::from(rel), bytes));
+    Ok(())
+}
+
+fn relative_string(root: &Path, path: &Path) -> Result<String, NgToolError> {
+    path.strip_prefix(root)
+        .ok()
+        .and_then(Path::to_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| NgToolError::InvalidInput {
+            field: "backup_path".into(),
+            message: format!("无法生成安全相对路径：{}", path.display()),
+        })
 }
 
 fn read_hostname() -> String {
@@ -395,7 +464,6 @@ fn read_hostname() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
 }
 
-/// 删除备份。
 pub async fn delete_backup(ctx: Arc<AppContext>, path: PathBuf) -> Result<(), NgToolError> {
     let started = Instant::now();
     let name = path
@@ -403,6 +471,12 @@ pub async fn delete_backup(ctx: Arc<AppContext>, path: PathBuf) -> Result<(), Ng
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
+    if path.parent() != Some(ctx.paths.backups.as_path()) {
+        return Err(NgToolError::InvalidInput {
+            field: "backup".into(),
+            message: "只能删除备份目录中的文件".into(),
+        });
+    }
     let res = tokio::task::spawn_blocking(move || std::fs::remove_file(&path))
         .await
         .map_err(|e| NgToolError::FileOperationFailed {
@@ -429,52 +503,75 @@ pub async fn delete_backup(ctx: Arc<AppContext>, path: PathBuf) -> Result<(), Ng
                 json!({"error": e.to_string()}),
             );
             Err(NgToolError::FileOperationFailed {
-                path: PathBuf::new(),
+                path: ctx.paths.backups.join(name),
                 message: e.to_string(),
             })
         }
     }
 }
 
-/// 计算还原前的影响摘要：哪些文件会被覆盖、哪些站点会被启用/停用。
 pub fn impact_for_restore(ctx: &AppContext, manifest: &Manifest) -> std::io::Result<RestoreImpact> {
-    let mut will_overwrite = Vec::new();
-    if manifest.scope.nginx_conf {
-        will_overwrite.push("nginx.conf".into());
-    }
-    for name in &manifest.scope.sites_available {
-        will_overwrite.push(format!("sites-available/{}", name));
-    }
+    let mut will_overwrite: Vec<String> = manifest
+        .scope
+        .files
+        .iter()
+        .map(|f| f.path.clone())
+        .chain(manifest.scope.symlinks.iter().map(|s| s.path.clone()))
+        .collect();
     will_overwrite.sort();
 
-    let target_enabled: HashSet<String> = manifest.scope.sites_enabled.iter().cloned().collect();
-    let current_enabled: HashSet<String> = collect_enabled_stems(&ctx.probe.sites_enabled)
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    let avail_existing: HashSet<String> = manifest
+    let target_enabled: HashSet<String> = manifest
         .scope
-        .sites_available
+        .files
         .iter()
-        .map(|n| n.trim_end_matches(".conf").to_string())
+        .map(|f| &f.path)
+        .chain(manifest.scope.symlinks.iter().map(|s| &s.path))
+        .filter_map(|p| p.strip_prefix("sites-enabled/"))
+        .map(str::to_string)
         .collect();
-
-    let mut will_enable: Vec<String> = target_enabled
+    let current_enabled = collect_relative_entries(&ctx.probe.sites_enabled)?;
+    let mut will_enable: Vec<_> = target_enabled
         .difference(&current_enabled)
         .cloned()
         .collect();
-    let mut will_disable: Vec<String> = current_enabled
+    let mut will_disable: Vec<_> = current_enabled
         .difference(&target_enabled)
         .cloned()
         .collect();
     will_enable.sort();
     will_disable.sort();
 
-    let missing_in_backup: Vec<String> = target_enabled
+    let snapshot_paths: HashSet<&str> = manifest
+        .scope
+        .files
         .iter()
-        .filter(|s| !avail_existing.contains(*s))
-        .cloned()
+        .map(|f| f.path.as_str())
+        .chain(manifest.scope.symlinks.iter().map(|s| s.path.as_str()))
         .collect();
+    let mut missing_in_backup = Vec::new();
+    for link in &manifest.scope.symlinks {
+        if !link.path.starts_with("sites-enabled/") {
+            continue;
+        }
+        let target = Path::new(&link.target);
+        let target_rel = if target.is_absolute() {
+            target
+                .strip_prefix(nginx_root(ctx))
+                .ok()
+                .and_then(Path::to_str)
+                .map(str::to_string)
+        } else {
+            Path::new(&link.path)
+                .parent()
+                .and_then(|p| normalize_relative(&p.join(target)))
+        };
+        if let Some(rel) = target_rel {
+            if !snapshot_paths.contains(rel.as_str()) {
+                missing_in_backup.push(link.path.clone());
+            }
+        }
+    }
+    missing_in_backup.sort();
 
     Ok(RestoreImpact {
         will_overwrite,
@@ -484,74 +581,28 @@ pub fn impact_for_restore(ctx: &AppContext, manifest: &Manifest) -> std::io::Res
     })
 }
 
-/// 还原备份。流程：
-/// 1) 校验 manifest 与 schema；
-/// 2) 自动创建 pre-restore 备份；
-/// 3) 解压目标 archive 到 ~/.local/ngtool/tmp/restore-<ts>/；
-/// 4) 范围内文件先写 tmp 再原子 rename；sites-enabled 按 manifest 集合同步；
-/// 5) `nginx -t` 通过则 reload；失败则用 pre-restore 备份再次还原。
-///    二次失败保留临时目录，错误信息中标注路径。
+fn collect_relative_entries(dir: &Path) -> std::io::Result<HashSet<String>> {
+    if !dir.is_dir() {
+        return Ok(HashSet::new());
+    }
+    let mut out = HashSet::new();
+    for entry in std::fs::read_dir(dir)? {
+        let Ok(entry) = entry else { continue };
+        if let Some(name) = entry.file_name().to_str() {
+            out.insert(name.to_string());
+        }
+    }
+    Ok(out)
+}
+
 pub async fn restore_backup(
     ctx: Arc<AppContext>,
     archive_path: PathBuf,
 ) -> Result<RestoreOutcome, NgToolError> {
     let started = Instant::now();
+    let snapshot = load_snapshot(archive_path.clone()).await?;
+    validate_snapshot(&snapshot)?;
 
-    let archive_clone = archive_path.clone();
-    let entries = tokio::task::spawn_blocking(move || read_tar_gz(&archive_clone))
-        .await
-        .map_err(|e| NgToolError::FileOperationFailed {
-            path: archive_path.clone(),
-            message: format!("任务异常：{}", e),
-        })?
-        .map_err(|e| NgToolError::FileOperationFailed {
-            path: archive_path.clone(),
-            message: e.to_string(),
-        })?;
-
-    // 解析 manifest
-    let manifest_bytes = entries
-        .iter()
-        .find(|(p, _)| p == Path::new("manifest.toml"))
-        .map(|(_, b)| b.clone())
-        .ok_or_else(|| NgToolError::ParseFailed {
-            target: archive_path.display().to_string(),
-            message: "manifest.toml 缺失".into(),
-        })?;
-    let manifest_text =
-        std::str::from_utf8(&manifest_bytes).map_err(|e| NgToolError::ParseFailed {
-            target: archive_path.display().to_string(),
-            message: format!("manifest 编码错误：{}", e),
-        })?;
-    let manifest: Manifest =
-        toml::from_str(manifest_text).map_err(|e| NgToolError::ParseFailed {
-            target: archive_path.display().to_string(),
-            message: format!("manifest 解析失败：{}", e),
-        })?;
-    if manifest.schema_version != MANIFEST_SCHEMA {
-        return Err(NgToolError::InvalidInput {
-            field: "manifest".into(),
-            message: format!(
-                "schema 版本 {} 不兼容（当前支持 {}）",
-                manifest.schema_version, MANIFEST_SCHEMA
-            ),
-        });
-    }
-
-    // 校验范围内文件 sha256
-    for (rel, hash) in &manifest.checksums {
-        if let Some((_, bytes)) = entries.iter().find(|(p, _)| p == Path::new(rel)) {
-            let actual = format!("sha256:{}", sha256_hex(bytes));
-            if &actual != hash {
-                return Err(NgToolError::ParseFailed {
-                    target: rel.clone(),
-                    message: format!("checksum 不一致：期望 {} 实际 {}", hash, actual),
-                });
-            }
-        }
-    }
-
-    // 创建 pre-restore 备份
     let pre = create_backup(
         ctx.clone(),
         CreateBackupInput {
@@ -559,132 +610,19 @@ pub async fn restore_backup(
         },
     )
     .await?;
+    let rollback_snapshot = load_snapshot(pre.clone()).await?;
+    validate_snapshot(&rollback_snapshot)?;
 
-    // 把范围内的内容写到目标
-    let nginx_root = ctx
-        .probe
-        .sites_available
-        .parent()
-        .unwrap_or_else(|| ctx.probe.sites_available.as_path())
-        .to_path_buf();
-    let avail_dir = ctx.probe.sites_available.clone();
-    let enabled_dir = ctx.probe.sites_enabled.clone();
-    let tmp_root = ctx.paths.tmp.join(format!(
-        "restore-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
-    ));
-
-    let scope = manifest.scope.clone();
-    let entries_clone = entries.clone();
-    let apply_result = tokio::task::spawn_blocking(move || -> Result<(), NgToolError> {
-        std::fs::create_dir_all(&tmp_root).map_err(|e| NgToolError::FileOperationFailed {
-            path: tmp_root.clone(),
-            message: e.to_string(),
-        })?;
-
-        // 1) nginx.conf
-        if scope.nginx_conf {
-            if let Some((_, bytes)) = entries_clone
-                .iter()
-                .find(|(p, _)| p == Path::new("nginx.conf"))
-            {
-                let dst = nginx_root.join("nginx.conf");
-                atomic_write_replace(&tmp_root, &dst, bytes)?;
-            }
-        }
-        // 2) sites-available/*.conf
-        std::fs::create_dir_all(&avail_dir).ok();
-        for name in &scope.sites_available {
-            let rel = format!("sites-available/{}", name);
-            if let Some((_, bytes)) = entries_clone.iter().find(|(p, _)| p == Path::new(&rel)) {
-                let dst = avail_dir.join(name);
-                atomic_write_replace(&tmp_root, &dst, bytes)?;
-            }
-        }
-        // 3) sites-enabled 链接同步
-        std::fs::create_dir_all(&enabled_dir).ok();
-        let target_enabled: HashSet<String> = scope.sites_enabled.iter().cloned().collect();
-        let current = collect_enabled_stems(&enabled_dir).unwrap_or_default();
-        let current_set: HashSet<String> = current.iter().cloned().collect();
-
-        // 删除多余链接
-        for stem in current_set.difference(&target_enabled) {
-            let p = enabled_dir.join(format!("{}.conf", stem));
-            let _ = std::fs::remove_file(&p);
-        }
-        // 补全缺失链接
-        for stem in target_enabled.difference(&current_set) {
-            let target = avail_dir.join(format!("{}.conf", stem));
-            if !target.exists() {
-                continue; // missing_in_backup 已在影响摘要里提示
-            }
-            let link = enabled_dir.join(format!("{}.conf", stem));
-            if link.symlink_metadata().is_ok() {
-                continue;
-            }
-            let _ = std::os::unix::fs::symlink(&target, &link);
-        }
-
-        // 清理 tmp_root（不删除其中的子项也无所谓——架构 §15.0 由启动时回收）
-        let _ = std::fs::remove_dir_all(&tmp_root);
-        Ok(())
-    })
-    .await
-    .map_err(|e| NgToolError::FileOperationFailed {
-        path: PathBuf::new(),
-        message: format!("任务异常：{}", e),
-    })?;
-
-    if let Err(e) = apply_result {
-        ctx.audit.log(
-            "backup.restore",
-            &archive_path.to_string_lossy(),
-            AuditResult::Failure,
-            started.elapsed().as_millis() as u64,
-            json!({"stage": "apply", "error": e.to_string(), "pre_restore": pre.to_string_lossy()}),
-        );
-        return Err(e);
+    if let Err(e) = apply_snapshot_async(nginx_root(&ctx), snapshot).await {
+        return finish_failed_restore(ctx, archive_path, pre, rollback_snapshot, e, started).await;
     }
 
-    // 测试 + reload
     if let Err(e) = ctx.nginx.test_config().await {
-        // 第一次回滚：用 pre-restore 重新还原
-        let archive_p = pre.clone();
-        let rollback = Box::pin(restore_backup(ctx.clone(), archive_p)).await;
-        let outcome = if rollback.is_ok() {
-            RestoreOutcome::TestFailedRolledBack {
-                error: e.to_string(),
-                pre_restore: pre,
-            }
-        } else {
-            RestoreOutcome::TestFailedRollbackFailed {
-                error: e.to_string(),
-                rollback_error: rollback.err().map(|e| e.to_string()).unwrap_or_default(),
-                pre_restore: pre,
-            }
-        };
-        ctx.audit.log(
-            "backup.restore",
-            &archive_path.to_string_lossy(),
-            AuditResult::Failure,
-            started.elapsed().as_millis() as u64,
-            json!({"stage": "test", "outcome": format!("{:?}", outcome)}),
-        );
-        return Ok(outcome);
+        return finish_failed_restore(ctx, archive_path, pre, rollback_snapshot, e, started).await;
     }
 
     if let Err(e) = ctx.systemd.reload("nginx").await {
-        ctx.audit.log(
-            "backup.restore",
-            &archive_path.to_string_lossy(),
-            AuditResult::Failure,
-            started.elapsed().as_millis() as u64,
-            json!({"stage": "reload", "error": e.to_string()}),
-        );
-        return Err(e);
+        return finish_failed_restore(ctx, archive_path, pre, rollback_snapshot, e, started).await;
     }
 
     ctx.audit.log(
@@ -697,111 +635,574 @@ pub async fn restore_backup(
     Ok(RestoreOutcome::Ok { pre_restore: pre })
 }
 
+async fn finish_failed_restore(
+    ctx: Arc<AppContext>,
+    archive_path: PathBuf,
+    pre: PathBuf,
+    rollback_snapshot: Snapshot,
+    original_error: NgToolError,
+    started: Instant,
+) -> Result<RestoreOutcome, NgToolError> {
+    let error = original_error.to_string();
+    let rollback = rollback_once(ctx.clone(), rollback_snapshot).await;
+    let outcome = match rollback {
+        Ok(()) => RestoreOutcome::FailedRolledBack {
+            error,
+            pre_restore: pre,
+        },
+        Err(rollback_error) => RestoreOutcome::FailedRollbackFailed {
+            error,
+            rollback_error: rollback_error.to_string(),
+            pre_restore: pre,
+        },
+    };
+    ctx.audit.log(
+        "backup.restore",
+        &archive_path.to_string_lossy(),
+        AuditResult::Failure,
+        started.elapsed().as_millis() as u64,
+        json!({"outcome": format!("{:?}", outcome)}),
+    );
+    Ok(outcome)
+}
+
+async fn rollback_once(ctx: Arc<AppContext>, snapshot: Snapshot) -> Result<(), NgToolError> {
+    apply_snapshot_async(nginx_root(&ctx), snapshot).await?;
+    ctx.nginx.test_config().await?;
+    ctx.systemd.reload("nginx").await
+}
+
+async fn load_snapshot(path: PathBuf) -> Result<Snapshot, NgToolError> {
+    let error_path = path.clone();
+    tokio::task::spawn_blocking(move || load_snapshot_sync(&path))
+        .await
+        .map_err(|e| NgToolError::FileOperationFailed {
+            path: error_path,
+            message: format!("任务异常：{}", e),
+        })?
+}
+
+fn load_snapshot_sync(path: &Path) -> Result<Snapshot, NgToolError> {
+    let entries = read_tar_gz(path).map_err(|e| NgToolError::FileOperationFailed {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    let mut unique = BTreeMap::new();
+    for (entry_path, bytes) in entries {
+        let rel = entry_path
+            .to_str()
+            .ok_or_else(|| NgToolError::ParseFailed {
+                target: path.display().to_string(),
+                message: "归档包含非 UTF-8 路径".into(),
+            })?;
+        if unique.insert(rel.to_string(), bytes).is_some() {
+            return Err(NgToolError::ParseFailed {
+                target: path.display().to_string(),
+                message: format!("归档包含重复路径：{}", rel),
+            });
+        }
+    }
+    let manifest_bytes =
+        unique
+            .remove("manifest.toml")
+            .ok_or_else(|| NgToolError::ParseFailed {
+                target: path.display().to_string(),
+                message: "manifest.toml 缺失".into(),
+            })?;
+    let manifest_text =
+        std::str::from_utf8(&manifest_bytes).map_err(|e| NgToolError::ParseFailed {
+            target: path.display().to_string(),
+            message: format!("manifest 编码错误：{}", e),
+        })?;
+    let manifest = toml::from_str(manifest_text).map_err(|e| NgToolError::ParseFailed {
+        target: path.display().to_string(),
+        message: format!("manifest 解析失败：{}", e),
+    })?;
+    Ok(Snapshot {
+        manifest,
+        files: unique,
+    })
+}
+
+fn validate_snapshot(snapshot: &Snapshot) -> Result<(), NgToolError> {
+    let manifest = &snapshot.manifest;
+    if manifest.schema_version != MANIFEST_SCHEMA {
+        return Err(NgToolError::InvalidInput {
+            field: "manifest".into(),
+            message: format!(
+                "schema 版本 {} 不兼容（当前支持 {}）",
+                manifest.schema_version, MANIFEST_SCHEMA
+            ),
+        });
+    }
+
+    let expected_dirs: BTreeSet<String> = MANAGED_DIRS.iter().map(|s| (*s).to_string()).collect();
+    let actual_dirs: BTreeSet<String> =
+        manifest.scope.managed_directories.iter().cloned().collect();
+    if actual_dirs != expected_dirs {
+        return Err(parse_error(
+            "manifest",
+            "managed_directories 范围不完整或不受支持",
+        ));
+    }
+
+    let mut paths = HashSet::new();
+    for dir in &manifest.scope.directories {
+        validate_managed_path(dir, false)?;
+        if !paths.insert(dir.as_str()) {
+            return Err(parse_error(dir, "manifest 路径重复"));
+        }
+    }
+    for file in &manifest.scope.files {
+        validate_managed_path(&file.path, true)?;
+        if !paths.insert(file.path.as_str()) {
+            return Err(parse_error(&file.path, "manifest 路径重复"));
+        }
+        let bytes = snapshot
+            .files
+            .get(&file.path)
+            .ok_or_else(|| parse_error(&file.path, "manifest 声明的文件在归档中缺失"))?;
+        let expected = manifest
+            .checksums
+            .get(&file.path)
+            .ok_or_else(|| parse_error(&file.path, "文件 checksum 缺失"))?;
+        let actual = format!("sha256:{}", sha256_hex(bytes));
+        if &actual != expected {
+            return Err(parse_error(
+                &file.path,
+                &format!("checksum 不一致：期望 {} 实际 {}", expected, actual),
+            ));
+        }
+    }
+    for link in &manifest.scope.symlinks {
+        validate_managed_path(&link.path, true)?;
+        if link.target.is_empty() {
+            return Err(parse_error(&link.path, "符号链接目标为空"));
+        }
+        if !paths.insert(link.path.as_str()) {
+            return Err(parse_error(&link.path, "manifest 路径重复"));
+        }
+    }
+
+    let symlink_paths: HashSet<&str> = manifest
+        .scope
+        .symlinks
+        .iter()
+        .map(|link| link.path.as_str())
+        .collect();
+    for path in paths.iter().copied() {
+        let mut parent = Path::new(path).parent();
+        while let Some(candidate) = parent {
+            if let Some(candidate) = candidate.to_str() {
+                if symlink_paths.contains(candidate) {
+                    return Err(parse_error(path, "路径不能位于归档符号链接之下"));
+                }
+            }
+            parent = candidate.parent();
+        }
+    }
+
+    if manifest.scope.nginx_conf != paths.contains("nginx.conf") {
+        return Err(parse_error("nginx.conf", "nginx_conf 标记与文件清单不一致"));
+    }
+    let file_paths: BTreeSet<&str> = manifest
+        .scope
+        .files
+        .iter()
+        .map(|f| f.path.as_str())
+        .collect();
+    let checksum_paths: BTreeSet<&str> = manifest.checksums.keys().map(String::as_str).collect();
+    let archive_paths: BTreeSet<&str> = snapshot.files.keys().map(String::as_str).collect();
+    if checksum_paths != file_paths || archive_paths != file_paths {
+        return Err(parse_error(
+            "manifest",
+            "文件、checksum 与归档条目不完全一致",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_managed_path(path: &str, allow_nginx_conf: bool) -> Result<(), NgToolError> {
+    let p = Path::new(path);
+    if p.is_absolute() || p.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return Err(parse_error(path, "路径必须是安全的相对路径"));
+    }
+    let mut components = p.components();
+    let first = components.next().and_then(|c| match c {
+        Component::Normal(s) => s.to_str(),
+        _ => None,
+    });
+    if allow_nginx_conf && components.next().is_none() {
+        return Ok(());
+    }
+    if !first.map(|s| MANAGED_DIRS.contains(&s)).unwrap_or(false) {
+        return Err(parse_error(path, "路径不在允许的 Nginx 配置范围内"));
+    }
+    Ok(())
+}
+
+fn parse_error(target: &str, message: &str) -> NgToolError {
+    NgToolError::ParseFailed {
+        target: target.to_string(),
+        message: message.to_string(),
+    }
+}
+
+async fn apply_snapshot_async(root: PathBuf, snapshot: Snapshot) -> Result<(), NgToolError> {
+    tokio::task::spawn_blocking(move || apply_snapshot(&root, &snapshot))
+        .await
+        .map_err(|e| NgToolError::FileOperationFailed {
+            path: PathBuf::new(),
+            message: format!("任务异常：{}", e),
+        })?
+}
+
+fn apply_snapshot(root: &Path, snapshot: &Snapshot) -> Result<(), NgToolError> {
+    validate_snapshot(snapshot)?;
+
+    for dir in MANAGED_DIRS {
+        let path = root.join(dir);
+        remove_path(&path)?;
+        std::fs::create_dir_all(&path).map_err(|e| NgToolError::FileOperationFailed {
+            path: path.clone(),
+            message: e.to_string(),
+        })?;
+    }
+
+    let target_root_entries: HashSet<&str> = snapshot
+        .manifest
+        .scope
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .chain(
+            snapshot
+                .manifest
+                .scope
+                .symlinks
+                .iter()
+                .map(|link| link.path.as_str()),
+        )
+        .filter(|path| !path.contains('/'))
+        .collect();
+    for entry in std::fs::read_dir(root).map_err(|e| NgToolError::FileOperationFailed {
+        path: root.to_path_buf(),
+        message: e.to_string(),
+    })? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        let meta =
+            std::fs::symlink_metadata(&path).map_err(|e| NgToolError::FileOperationFailed {
+                path: path.clone(),
+                message: e.to_string(),
+            })?;
+        if (meta.is_file() || meta.file_type().is_symlink())
+            && entry
+                .file_name()
+                .to_str()
+                .map(|name| !target_root_entries.contains(name))
+                .unwrap_or(false)
+        {
+            remove_path(&path)?;
+        }
+    }
+
+    let mut directories = snapshot.manifest.scope.directories.clone();
+    directories.sort_by_key(|p| Path::new(p).components().count());
+    for rel in directories {
+        let path = root.join(&rel);
+        std::fs::create_dir_all(&path).map_err(|e| NgToolError::FileOperationFailed {
+            path,
+            message: e.to_string(),
+        })?;
+    }
+
+    for file in &snapshot.manifest.scope.files {
+        let target = root.join(&file.path);
+        let bytes = snapshot
+            .files
+            .get(&file.path)
+            .ok_or_else(|| parse_error(&file.path, "归档文件缺失"))?;
+        atomic_write_replace(&target, bytes, file.mode)?;
+    }
+
+    for link in &snapshot.manifest.scope.symlinks {
+        let path = root.join(&link.path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| NgToolError::FileOperationFailed {
+                path: parent.to_path_buf(),
+                message: e.to_string(),
+            })?;
+        }
+        remove_path(&path)?;
+        std::os::unix::fs::symlink(&link.target, &path).map_err(|e| {
+            NgToolError::FileOperationFailed {
+                path,
+                message: e.to_string(),
+            }
+        })?;
+    }
+    Ok(())
+}
+
+fn remove_path(path: &Path) -> Result<(), NgToolError> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    let result = if meta.is_dir() && !meta.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    result.map_err(|e| NgToolError::FileOperationFailed {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })
+}
+
+fn atomic_write_replace(target: &Path, bytes: &[u8], mode: u32) -> Result<(), NgToolError> {
+    use std::io::Write as _;
+    let parent = target
+        .parent()
+        .ok_or_else(|| NgToolError::FileOperationFailed {
+            path: target.to_path_buf(),
+            message: "目标路径缺少父目录".into(),
+        })?;
+    std::fs::create_dir_all(parent).map_err(|e| NgToolError::FileOperationFailed {
+        path: parent.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let name = target
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    let tmp = parent.join(format!(
+        ".{}.ngtool.{}.{}.tmp",
+        name,
+        std::process::id(),
+        nonce
+    ));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| NgToolError::FileOperationFailed {
+                path: tmp.clone(),
+                message: e.to_string(),
+            })?;
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|e| NgToolError::FileOperationFailed {
+                path: tmp.clone(),
+                message: e.to_string(),
+            })?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).map_err(|e| {
+            NgToolError::FileOperationFailed {
+                path: tmp.clone(),
+                message: e.to_string(),
+            }
+        })?;
+        std::fs::rename(&tmp, target).map_err(|e| NgToolError::FileOperationFailed {
+            path: target.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn nginx_root(ctx: &AppContext) -> PathBuf {
+    ctx.probe
+        .sites_available
+        .parent()
+        .unwrap_or(ctx.probe.sites_available.as_path())
+        .to_path_buf()
+}
+
+fn normalize_relative(path: &Path) -> Option<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(p) => parts.push(p.to_os_string()),
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    let mut normalized = PathBuf::new();
+    for part in parts {
+        normalized.push(part);
+    }
+    normalized.to_str().map(str::to_string)
+}
+
 #[derive(Debug, Clone)]
 pub enum RestoreOutcome {
-    /// 还原成功（pre_restore 是当前自动创建的回滚点）
-    Ok { pre_restore: PathBuf },
-    /// `nginx -t` 失败但已成功回滚到 pre-restore
-    TestFailedRolledBack { error: String, pre_restore: PathBuf },
-    /// `nginx -t` 失败且回滚也失败：保留 pre_restore 供人工干预
-    TestFailedRollbackFailed {
+    Ok {
+        pre_restore: PathBuf,
+    },
+    FailedRolledBack {
+        error: String,
+        pre_restore: PathBuf,
+    },
+    FailedRollbackFailed {
         error: String,
         rollback_error: String,
         pre_restore: PathBuf,
     },
 }
 
-fn atomic_write_replace(tmp_root: &Path, target: &Path, bytes: &[u8]) -> Result<(), NgToolError> {
-    use std::io::Write as _;
-    let file_name = target
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file");
-    let tmp = tmp_root.join(format!("{}.tmp", file_name));
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&tmp)
-        .map_err(|e| NgToolError::FileOperationFailed {
-            path: tmp.clone(),
-            message: e.to_string(),
-        })?;
-    f.write_all(bytes)
-        .map_err(|e| NgToolError::FileOperationFailed {
-            path: tmp.clone(),
-            message: e.to_string(),
-        })?;
-    f.sync_all().map_err(|e| NgToolError::FileOperationFailed {
-        path: tmp.clone(),
-        message: e.to_string(),
-    })?;
-    drop(f);
-    std::fs::rename(&tmp, target).map_err(|e| NgToolError::FileOperationFailed {
-        path: target.to_path_buf(),
-        message: e.to_string(),
-    })?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn manifest_roundtrip() {
-        let mut checks = BTreeMap::new();
-        checks.insert("nginx.conf".into(), "sha256:deadbeef".into());
-        let m = Manifest {
-            schema_version: 1,
-            created_at: "2026-04-29T22:00:00+08:00".into(),
-            hostname: "orangepi".into(),
-            nginx_version: "nginx version: nginx/1.24.0".into(),
-            ngtool_version: "0.1.0".into(),
+    fn sample_manifest() -> Manifest {
+        let mut checksums = BTreeMap::new();
+        checksums.insert("nginx.conf".into(), format!("sha256:{}", sha256_hex(b"x")));
+        Manifest {
+            schema_version: MANIFEST_SCHEMA,
+            created_at: "2026-07-10T00:00:00Z".into(),
+            hostname: "host".into(),
+            nginx_version: "nginx/1.24".into(),
+            ngtool_version: "1.2.4".into(),
             source: BackupSource::Manual,
             scope: ManifestScope {
                 nginx_conf: true,
-                sites_available: vec!["app.conf".into()],
-                sites_enabled: vec!["app".into()],
+                managed_directories: MANAGED_DIRS.iter().map(|s| (*s).to_string()).collect(),
+                directories: MANAGED_DIRS.iter().map(|s| (*s).to_string()).collect(),
+                files: vec![ManifestFile {
+                    path: "nginx.conf".into(),
+                    mode: 0o644,
+                }],
+                symlinks: vec![],
             },
-            checksums: checks,
-        };
-        let s = toml::to_string_pretty(&m).unwrap();
-        let back: Manifest = toml::from_str(&s).unwrap();
-        assert_eq!(back.schema_version, 1);
-        assert_eq!(back.source, BackupSource::Manual);
-        assert_eq!(back.scope.sites_available, vec!["app.conf"]);
-        assert_eq!(back.scope.sites_enabled, vec!["app"]);
+            checksums,
+        }
     }
 
     #[test]
-    fn impact_diff_marks_enable_disable() {
-        // 当前启用：app, blog
-        // 备份启用：app, api
-        // → will_enable: [api], will_disable: [blog]
-        let manifest = Manifest {
-            schema_version: 1,
-            created_at: "".into(),
-            hostname: "".into(),
-            nginx_version: "".into(),
-            ngtool_version: "".into(),
-            source: BackupSource::Manual,
-            scope: ManifestScope {
-                nginx_conf: true,
-                sites_available: vec!["app.conf".into(), "api.conf".into()],
-                sites_enabled: vec!["app".into(), "api".into()],
-            },
-            checksums: BTreeMap::new(),
+    fn manifest_roundtrip() {
+        let manifest = sample_manifest();
+        let text = toml::to_string_pretty(&manifest).unwrap();
+        let back: Manifest = toml::from_str(&text).unwrap();
+        assert_eq!(back.schema_version, MANIFEST_SCHEMA);
+        assert_eq!(back.scope.files[0].path, "nginx.conf");
+    }
+
+    #[test]
+    fn validation_rejects_missing_archive_file() {
+        let snapshot = Snapshot {
+            manifest: sample_manifest(),
+            files: BTreeMap::new(),
         };
-        // 自己写 impact 计算逻辑做单测（不走 ctx）
-        let target_enabled: HashSet<String> =
-            manifest.scope.sites_enabled.iter().cloned().collect();
-        let current: HashSet<String> = ["app", "blog"].iter().map(|s| s.to_string()).collect();
-        let mut will_enable: Vec<String> = target_enabled.difference(&current).cloned().collect();
-        let mut will_disable: Vec<String> = current.difference(&target_enabled).cloned().collect();
-        will_enable.sort();
-        will_disable.sort();
-        assert_eq!(will_enable, vec!["api"]);
-        assert_eq!(will_disable, vec!["blog"]);
+        assert!(validate_snapshot(&snapshot).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_path_traversal() {
+        assert!(validate_managed_path("sites-available/../../etc/passwd", false).is_err());
+        assert!(validate_managed_path("/etc/passwd", false).is_err());
+    }
+
+    #[test]
+    fn normalize_relative_link_target() {
+        assert_eq!(
+            normalize_relative(Path::new("sites-enabled/../sites-available/app.conf")),
+            Some("sites-available/app.conf".into())
+        );
+    }
+
+    #[test]
+    fn apply_snapshot_restores_files_links_and_removes_extras() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in MANAGED_DIRS {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("conf.d/extra.conf"), b"extra").unwrap();
+
+        let nginx_conf = b"events {}\nhttp {}\n".to_vec();
+        let site = b"server { listen 80; }\n".to_vec();
+        let stream = b"server { listen 44343; proxy_pass 127.0.0.1:38443; }\n".to_vec();
+        let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        files.insert("nginx.conf".into(), nginx_conf.clone());
+        files.insert("sites-available/app.conf".into(), site.clone());
+        files.insert("stream-conf.d/proxy.conf".into(), stream.clone());
+
+        let listed_files = vec![
+            ManifestFile {
+                path: "nginx.conf".into(),
+                mode: 0o640,
+            },
+            ManifestFile {
+                path: "sites-available/app.conf".into(),
+                mode: 0o644,
+            },
+            ManifestFile {
+                path: "stream-conf.d/proxy.conf".into(),
+                mode: 0o644,
+            },
+        ];
+        let checksums = files
+            .iter()
+            .map(|(path, bytes)| (path.clone(), format!("sha256:{}", sha256_hex(bytes))))
+            .collect();
+        let snapshot = Snapshot {
+            manifest: Manifest {
+                schema_version: MANIFEST_SCHEMA,
+                created_at: "2026-07-10T00:00:00Z".into(),
+                hostname: "host".into(),
+                nginx_version: "nginx/1.24".into(),
+                ngtool_version: "1.2.4".into(),
+                source: BackupSource::Manual,
+                scope: ManifestScope {
+                    nginx_conf: true,
+                    managed_directories: MANAGED_DIRS.iter().map(|s| (*s).to_string()).collect(),
+                    directories: MANAGED_DIRS.iter().map(|s| (*s).to_string()).collect(),
+                    files: listed_files,
+                    symlinks: vec![ManifestSymlink {
+                        path: "sites-enabled/app.conf".into(),
+                        target: "../sites-available/app.conf".into(),
+                    }],
+                },
+                checksums,
+            },
+            files,
+        };
+
+        apply_snapshot(root, &snapshot).unwrap();
+
+        assert_eq!(std::fs::read(root.join("nginx.conf")).unwrap(), nginx_conf);
+        assert_eq!(
+            std::fs::read(root.join("sites-available/app.conf")).unwrap(),
+            site
+        );
+        assert_eq!(
+            std::fs::read(root.join("stream-conf.d/proxy.conf")).unwrap(),
+            stream
+        );
+        assert!(!root.join("conf.d/extra.conf").exists());
+        assert_eq!(
+            std::fs::read_link(root.join("sites-enabled/app.conf")).unwrap(),
+            PathBuf::from("../sites-available/app.conf")
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("nginx.conf"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
     }
 }

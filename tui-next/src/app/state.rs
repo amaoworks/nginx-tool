@@ -2244,7 +2244,8 @@ impl AppState {
                             .to_string();
                         self.notification =
                             Some(Notification::success(format!("已创建备份 {}", name)));
-                        self.backup.push_output([format!("✓ 已创建：{}", name)]);
+                        self.backup
+                            .push_output([format!("✓ 已创建：{}", p.display())]);
                         self.backup.pending_refresh = true;
                     }
                     Err(e) => {
@@ -2276,21 +2277,21 @@ impl AppState {
                         ]);
                         self.backup.pending_refresh = true;
                     }
-                    Ok(crate::domain::backup::RestoreOutcome::TestFailedRolledBack {
+                    Ok(crate::domain::backup::RestoreOutcome::FailedRolledBack {
                         error,
                         pre_restore,
                     }) => {
                         self.notification = Some(Notification::failure(
-                            "还原后 nginx -t 失败，已回滚到 pre-restore".to_string(),
+                            "还原失败，已回滚到 pre-restore".to_string(),
                         ));
                         self.backup.push_output([
-                            "⚠ 还原后 nginx -t 失败，已自动回滚".into(),
+                            "⚠ 还原失败，已自动回滚".into(),
                             format!("  错误：{}", error),
                             format!("  pre-restore 备份保留：{}", pre_restore.display()),
                         ]);
                         self.backup.pending_refresh = true;
                     }
-                    Ok(crate::domain::backup::RestoreOutcome::TestFailedRollbackFailed {
+                    Ok(crate::domain::backup::RestoreOutcome::FailedRollbackFailed {
                         error,
                         rollback_error,
                         pre_restore,
@@ -4536,15 +4537,17 @@ impl AppState {
                     ));
                     return;
                 }
+                let backup_dir = self.ctx.paths.backups.display().to_string();
                 let modal = Modal::confirm(
                     "💾 创建备份",
                     vec![
-                        "范围限定：".into(),
-                        "  /etc/nginx/nginx.conf".into(),
-                        "  /etc/nginx/sites-available/*.conf".into(),
-                        "  /etc/nginx/sites-enabled 启用关系".into(),
+                        format!("保存目录：{}", backup_dir),
                         "".into(),
-                        "不会备份 conf.d/、snippets/、modules-enabled/ 等".into(),
+                        "Nginx 配置快照范围：".into(),
+                        "  /etc/nginx 根目录配置文件（含 nginx.conf）".into(),
+                        "  sites-available/、sites-enabled/".into(),
+                        "  conf.d/、snippets/、stream-conf.d/".into(),
+                        "  modules-enabled/（含符号链接关系）".into(),
                     ],
                     "确认创建",
                     crate::ui::modal::ModalAction::CreateBackup,
@@ -4603,7 +4606,7 @@ impl AppState {
         }
         let manifest = b.manifest.clone().unwrap();
         let path = b.path.clone();
-        let source_label = b.source_label().to_string();
+        let created_at = b.created_at_label();
         let impact = match crate::domain::backup::impact_for_restore(&self.ctx, &manifest) {
             Ok(i) => i,
             Err(e) => {
@@ -4613,13 +4616,12 @@ impl AppState {
         };
 
         let mut body: Vec<String> = Vec::new();
-        body.push(format!("时间：{}", manifest.created_at));
-        body.push(format!("来源：{}", source_label));
-        body.push(String::new());
-        body.push("将覆盖：".into());
-        for f in &impact.will_overwrite {
-            body.push(format!("  · {}", f));
-        }
+        body.push(format!("时间：{}", created_at));
+        body.push(format!(
+            "内容：{} 个文件，{} 个链接",
+            manifest.scope.files.len(),
+            manifest.scope.symlinks.len()
+        ));
         if !impact.will_enable.is_empty() {
             body.push(format!("将启用：{}", impact.will_enable.join(", ")));
         }
@@ -4634,7 +4636,6 @@ impl AppState {
         }
         body.push(String::new());
         body.push("将自动创建 pre-restore 备份。".into());
-        body.push("不在范围内的文件不会被修改。".into());
 
         let modal = Modal::confirm(
             "⚠️  确认还原备份",
