@@ -1,6 +1,7 @@
 //! 应用状态：按页面拆分子状态，AppState 聚合事件与按键处理。
 
 mod app;
+mod handlers;
 mod backup;
 mod certs;
 mod common;

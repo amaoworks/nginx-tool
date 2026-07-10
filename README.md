@@ -105,6 +105,11 @@ sudo bash ~/nginx/install.sh update
 sudo bash ~/nginx/install.sh uninstall
 ```
 
+## 运维脚本（可选）
+
+仓库 `scripts/` 提供少数高风险运维脚本（如修复坏掉的证书引用、清空全部证书），**不是日常功能入口**。  
+说明与风险见 [scripts/README.md](scripts/README.md)。
+
 ## 注意
 
 - 写操作通常需要 root 或 sudo

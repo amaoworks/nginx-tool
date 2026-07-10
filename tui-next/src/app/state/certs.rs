@@ -44,11 +44,11 @@ impl CertsAction {
 
     pub fn label(&self) -> &'static str {
         match self {
-            CertsAction::Request => "申请新证书",
-            CertsAction::RenewAll => "续期所有证书",
-            CertsAction::CheckAutoRenew => "检查自动续签",
-            CertsAction::InstallDeployHook => "安装 deploy hook",
-            CertsAction::DeleteOrphan => "清理全局多余",
+            CertsAction::Request => "为当前站点申请证书",
+            CertsAction::RenewAll => "续期全部证书",
+            CertsAction::CheckAutoRenew => "检查自动续期",
+            CertsAction::InstallDeployHook => "安装续期后重载钩子",
+            CertsAction::DeleteOrphan => "清理多余证书",
         }
     }
 }

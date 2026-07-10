@@ -24,11 +24,11 @@ impl ServiceButton {
 
     pub fn label(&self) -> &'static str {
         match self {
-            ServiceButton::Test => "测试配置",
+            ServiceButton::Test => "测试配置 (nginx -t)",
             ServiceButton::Reload => "重载配置",
-            ServiceButton::Restart => "重启服务 ⚠",
+            ServiceButton::Restart => "重启服务",
             ServiceButton::Status => "查看状态",
-            ServiceButton::CheckUpdate => "检查更新",
+            ServiceButton::CheckUpdate => "检查 ngtool 更新",
         }
     }
 }

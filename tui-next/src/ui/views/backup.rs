@@ -12,7 +12,7 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default().borders(Borders::NONE).title(Span::styled(
-        format!(" 💾 备份还原  [{} 份备份] ", state.backup.list.len()),
+        format!(" 💾 备份  [{} 份备份] ", state.backup.list.len()),
         Style::default().fg(theme::FG_PATH),
     ));
     let inner = block.inner(area);

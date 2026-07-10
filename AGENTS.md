@@ -33,9 +33,9 @@ Nginx-Tools/
 │   ├── CHANGELOG.md        # TUI 变更记录
 │   ├── src/                # Rust 源码
 │   │   ├── main.rs         # 入口
-│   │   ├── app/            # 应用层（状态管理）
+│   │   ├── app/            # 应用层（route/event + state/ + handlers/）
 │   │   ├── ui/             # 界面层（ratatui 组件）
-│   │   ├── domain/         # 领域层（站点/证书等模型）
+│   │   ├── domain/         # 领域层（站点/证书/配置健康等）
 │   │   ├── infra/          # 基础设施层（系统命令、文件操作）
 │   │   ├── config/         # 配置管理
 │   │   ├── template/       # 模板解析与渲染
@@ -52,6 +52,7 @@ Nginx-Tools/
 │       ├── architecture.md
 │       ├── execution.md
 │       └── risks.md
+├── scripts/                # 可选运维脚本（见 scripts/README.md）
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml          # push/PR：cargo test + clippy（tui-next）

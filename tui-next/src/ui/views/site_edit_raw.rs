@@ -16,7 +16,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let config_path = format!("/etc/nginx/sites-available/{}.conf", site_name);
 
     let block = Block::default().borders(Borders::NONE).title(Span::styled(
-        format!(" 📁 站点管理 ▸ 编辑: {} ▸ 原始配置 ", site_name),
+        format!(" 📁 站点 ▸ {} ▸ 原始配置 ", site_name),
         Style::default().fg(theme::FG_PATH),
     ));
     let inner = block.inner(area);
@@ -25,7 +25,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // 文件路径提示
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        "模式切换：F5 托管模式",
+        "切换：F5 返回托管模式",
         Style::default().fg(theme::FG_DIM),
     )));
     lines.push(Line::from(""));

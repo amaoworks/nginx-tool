@@ -12,7 +12,7 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default().borders(Borders::NONE).title(Span::styled(
-        " 📊 仪表盘 ",
+        " 📊 总览 ",
         Style::default().fg(theme::FG_PATH),
     ));
     let inner = block.inner(area);
@@ -27,7 +27,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
                 if state.dashboard.refreshing {
                     "采集中…"
                 } else {
-                    "首次进入，准备采集仪表盘数据"
+                    "首次进入，正在采集状态…"
                 },
                 Style::default().fg(theme::FG_DIM),
             )));

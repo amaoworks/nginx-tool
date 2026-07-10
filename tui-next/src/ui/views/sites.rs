@@ -13,7 +13,7 @@ use crate::ui::theme;
 pub fn render_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default().borders(Borders::NONE).title(Span::styled(
         format!(
-            " 📁 站点管理 ▸ 站点列表  [{} 个站点] ",
+            " 📁 站点 ▸ 列表  [{} 个站点] ",
             state.sites.list.len()
         ),
         Style::default().fg(theme::FG_PATH),

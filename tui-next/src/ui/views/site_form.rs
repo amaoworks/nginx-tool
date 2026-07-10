@@ -12,7 +12,7 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default().borders(Borders::NONE).title(Span::styled(
-        " 📁 站点管理 ▸ 新建站点 ",
+        " 📁 站点 ▸ 新建 ",
         Style::default().fg(theme::FG_PATH),
     ));
     let inner = block.inner(area);

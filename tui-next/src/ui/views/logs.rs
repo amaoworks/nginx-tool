@@ -19,7 +19,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(theme::BORDER))
         .title(Span::styled(
-            " 📋 日志查看 ",
+            " 📋 日志 ",
             Style::default().fg(theme::FG_PATH),
         ));
     let header_area = Rect { height: 2, ..area };
@@ -151,7 +151,7 @@ fn render_content(frame: &mut Frame, area: Rect, state: &AppState) {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "提示：检查 Nginx 是否运行，或使用「站点管理」查看该站点是否已启用",
+                "提示：检查 Nginx 是否运行，或到「站点」页查看该站点是否已启用",
                 Style::default().fg(theme::FG_DIM),
             )),
         ];

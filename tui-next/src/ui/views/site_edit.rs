@@ -12,7 +12,7 @@ use crate::ui::theme;
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let edit = &state.site_edit;
     let block = Block::default().borders(Borders::NONE).title(Span::styled(
-        format!(" 📁 站点管理 ▸ 编辑: {} ▸ 托管 ", edit.site_name),
+        format!(" 📁 站点 ▸ {} ▸ 托管编辑 ", edit.site_name),
         Style::default().fg(theme::FG_PATH),
     ));
     let inner = block.inner(area);
@@ -20,7 +20,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        "模式切换：F5 高级模式  F6 原始模式",
+        "切换：F5 高级（注入槽）  F6 原始配置",
         Style::default().fg(theme::FG_DIM),
     )));
     lines.push(Line::from(""));

@@ -53,12 +53,12 @@ impl MenuItem {
 
     pub fn label(&self) -> &'static str {
         match self {
-            MenuItem::Dashboard => "📊 仪表盘",
-            MenuItem::Sites => "📁 站点管理",
-            MenuItem::Certs => "🔐 证书管理",
-            MenuItem::Logs => "📋 日志查看",
-            MenuItem::Service => "⚙️ 服务控制",
-            MenuItem::Backup => "💾 备份还原",
+            MenuItem::Dashboard => "📊 总览",
+            MenuItem::Sites => "📁 站点",
+            MenuItem::Certs => "🔐 证书",
+            MenuItem::Logs => "📋 日志",
+            MenuItem::Service => "⚙️ 服务",
+            MenuItem::Backup => "💾 备份",
         }
     }
 

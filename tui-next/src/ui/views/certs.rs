@@ -16,7 +16,7 @@ use crate::ui::theme;
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default().borders(Borders::NONE).title(Span::styled(
         format!(
-            " 🔐 证书管理  [{} 个站点 / {} 个证书] ",
+            " 🔐 证书  [{} 个站点 / {} 个证书] ",
             state.sites.list.len(),
             state.certs.list.len()
         ),
@@ -93,13 +93,13 @@ fn render_table(frame: &mut Frame, area: Rect, state: &AppState) {
         let body = if state.certs.refreshing {
             "采集中…"
         } else if !state.ctx.deps().certbot {
-            "certbot 未安装，但仍可先到「站点管理」创建站点"
+            "certbot 未安装，但仍可先到「站点」页创建站点"
         } else if !state.certs.list.is_empty() {
             "未发现站点配置。当前存在证书，但它们未关联到任何站点。"
         } else if !state.ctx.deps().certbot {
             "certbot 未安装，证书表格不可用"
         } else {
-            "未发现站点配置。先到「站点管理」创建站点后再申请证书。"
+            "未发现站点配置。先到「站点」页创建站点后再申请证书。"
         };
         let p = Paragraph::new(vec![Line::from(""), Line::from(body)])
             .style(Style::default().fg(theme::FG_DIM));
@@ -194,7 +194,7 @@ fn render_actions(frame: &mut Frame, area: Rect, state: &AppState) {
                 Style::default().fg(theme::FG_DIM),
             )),
             Line::from(Span::styled(
-                "先到「站点管理」创建并启用站点",
+                "先到「站点」创建并启用站点",
                 Style::default().fg(theme::FG_DIM),
             )),
         ],

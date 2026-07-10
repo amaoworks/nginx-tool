@@ -47,6 +47,11 @@ pub enum ModalAction {
     DeleteOrphanCerts {
         cert_names: Vec<String>,
     },
+    /// 对站点配置执行健康修复并重新进入编辑
+    FixSiteConfig {
+        site_name: String,
+        path: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,17 +120,20 @@ impl Modal {
     #[allow(dead_code)]
     pub fn confirm_quit() -> Self {
         Self::confirm(
-            "⚠️  确认退出",
-            vec!["即将退出 Nginx-Tools。".into()],
             "确认退出",
+            vec!["即将退出 ngtool。未保存的编辑将丢失。".into()],
+            "退出",
             ModalAction::Quit,
         )
     }
 
     pub fn confirm_restart_nginx() -> Self {
         Self::confirm(
-            "⚠️  确认重启服务",
-            vec!["重启 Nginx 服务将导致".into(), "所有连接短暂中断".into()],
+            "确认重启 Nginx",
+            vec![
+                "将重启 Nginx 服务。".into(),
+                "现有连接可能短暂中断，请确认业务可接受。".into(),
+            ],
             "确认重启",
             ModalAction::RestartNginx,
         )
@@ -134,12 +142,12 @@ impl Modal {
     /// 新建站点表单有内容时，按 Esc 确认是否放弃
     pub fn confirm_discard_site_form() -> Self {
         Self::confirm(
-            "⚠️  确认放弃新建",
+            "放弃新建站点？",
             vec![
-                "表单已填写的内容将丢失。".into(),
-                "确认离开新建站点页面？".into(),
+                "表单里已填写的内容将丢失。".into(),
+                "确定离开新建页面吗？".into(),
             ],
-            "放弃",
+            "放弃新建",
             ModalAction::DiscardSiteForm,
         )
     }
@@ -147,8 +155,11 @@ impl Modal {
     /// 编辑器有未保存修改时，按 Esc 确认是否放弃
     pub fn confirm_discard_site_edit() -> Self {
         Self::three_button(
-            "⚠️  有未保存的修改",
-            vec!["是否保存当前修改？".into()],
+            "有未保存的修改",
+            vec![
+                "当前站点配置已改动但尚未保存。".into(),
+                "请选择离开前的处理方式。".into(),
+            ],
             "保存并退出",
             ModalAction::SaveAndExitSiteEdit,
             "不保存退出",
@@ -158,12 +169,13 @@ impl Modal {
 
     pub fn confirm_upgrade_tui(current: &str, latest: &str) -> Self {
         Self::confirm(
-            "⬆ 更新 TUI",
+            "更新 ngtool",
             vec![
                 format!("当前版本：{}", current),
                 format!("最新版本：{}", latest),
-                "".into(),
-                "将下载并替换当前二进制，更新后需重启 ngtool。".into(),
+                String::new(),
+                "将下载并替换本机 ngtool 程序。".into(),
+                "更新完成后需要重新启动 ngtool 才会生效。".into(),
             ],
             "确认更新",
             ModalAction::UpgradeTui,
@@ -172,14 +184,43 @@ impl Modal {
 
     pub fn confirm_install_deploy_hook() -> Self {
         Self::confirm(
-            "🔧 安装 deploy hook",
+            "安装证书续期钩子",
             vec![
-                "将在 /etc/letsencrypt/renewal-hooks/deploy/ 下创建".into(),
-                "reload-nginx.sh 脚本，确保证书续期后自动重载 Nginx。".into(),
+                "将在 /etc/letsencrypt/renewal-hooks/deploy/ 创建脚本，".into(),
+                "使证书自动续期后立即重载 Nginx。".into(),
                 "需要 root 权限。".into(),
             ],
             "确认安装",
             ModalAction::InstallDeployHook,
+        )
+    }
+
+    /// 进入编辑时发现配置问题：可一键修复或忽略后继续编辑
+    pub fn confirm_config_health_fix(
+        site_name: &str,
+        path: std::path::PathBuf,
+        issue_lines: Vec<String>,
+    ) -> Self {
+        let mut body = vec![
+            format!("站点「{}」的配置可能存在问题：", site_name),
+            String::new(),
+        ];
+        for line in issue_lines {
+            body.push(format!("• {}", line));
+        }
+        body.push(String::new());
+        body.push("可尝试自动修复（会直接改写配置文件），".into());
+        body.push("或忽略后继续手动编辑。".into());
+        Self::three_button(
+            "配置健康检查",
+            body,
+            "尝试修复",
+            ModalAction::FixSiteConfig {
+                site_name: site_name.to_string(),
+                path,
+            },
+            "忽略并编辑",
+            ModalAction::None,
         )
     }
 

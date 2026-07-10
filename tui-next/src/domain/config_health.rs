@@ -1,12 +1,13 @@
 //! Nginx 配置健康检查。
 //!
-//! 提供对站点 conf 的静态扫描与内容级修复建议（重复 HTTP server 块、
+//! 提供对站点 conf 的静态扫描与内容级修复（重复 HTTP server 块、
 //! 有证书却缺 HTTPS、仅 HTTPS 却缺 HTTP 跳转等）。
 //!
-//! - `scan_config_file`：只读扫描，已在进入站点编辑时给出提示
-//! - `fix_config_file`：返回修复后的文本，**不写盘**；完整自动修复 UI 仍待接入
+//! - [`scan_config_file`]：只读扫描
+//! - [`fix_config_file`]：按单条问题生成修复文本（不写盘）
+//! - [`apply_all_fixes`]：连续应用全部可修复问题并写回文件
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// 配置问题类型
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,19 +108,72 @@ pub fn scan_config_file(path: &Path) -> Result<Vec<ConfigIssue>, String> {
     Ok(issues)
 }
 
-/// 修复配置文件中的问题
+/// 对单条问题生成修复后的完整配置文本（不写盘）。
 pub fn fix_config_file(path: &Path, issue: &ConfigIssue) -> Result<String, String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("读取文件失败：{}", e))?;
+    apply_issue_to_content(&content, issue)
+}
 
-    let fixed_content = match issue {
-        ConfigIssue::DuplicateHttpBlock { .. } => remove_duplicate_http_blocks(&content)?,
+/// 一次写盘应用结果。
+#[derive(Debug, Clone)]
+pub struct FixReport {
+    pub path: PathBuf,
+    pub applied: Vec<String>,
+}
+
+/// 扫描并依次应用全部可修复问题，原子写回原文件。
+///
+/// 注意：写盘后不会自动执行 `nginx -t`；调用方应在需要时自行测试/重载。
+pub fn apply_all_fixes(path: &Path) -> Result<FixReport, String> {
+    let issues = scan_config_file(path)?;
+    if issues.is_empty() {
+        return Ok(FixReport {
+            path: path.to_path_buf(),
+            applied: Vec::new(),
+        });
+    }
+
+    let mut content =
+        std::fs::read_to_string(path).map_err(|e| format!("读取文件失败：{}", e))?;
+    let mut applied = Vec::new();
+
+    for issue in &issues {
+        content = apply_issue_to_content(&content, issue)?;
+        applied.push(issue.description());
+    }
+
+    atomic_write(path, content.as_bytes())?;
+
+    Ok(FixReport {
+        path: path.to_path_buf(),
+        applied,
+    })
+}
+
+fn apply_issue_to_content(content: &str, issue: &ConfigIssue) -> Result<String, String> {
+    match issue {
+        ConfigIssue::DuplicateHttpBlock { .. } => remove_duplicate_http_blocks(content),
         ConfigIssue::MissingHttpsBlock {
             domain, cert_path, ..
-        } => add_https_block(&content, domain, cert_path)?,
-        ConfigIssue::MissingHttpRedirect { domain, .. } => add_http_redirect(&content, domain)?,
-    };
+        } => add_https_block(content, domain, cert_path),
+        ConfigIssue::MissingHttpRedirect { domain, .. } => add_http_redirect(content, domain),
+    }
+}
 
-    Ok(fixed_content)
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let tmp = parent.join(format!(
+        ".{}.ngtool-health.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("site.conf")
+    ));
+    std::fs::write(&tmp, bytes).map_err(|e| format!("写入临时文件失败：{}", e))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("替换配置文件失败：{}", e)
+    })?;
+    Ok(())
 }
 
 /// 统计包含特定 listen 指令的 server 块数量
@@ -366,5 +420,26 @@ server {
         let fixed = remove_duplicate_http_blocks(content).unwrap();
         assert_eq!(count_server_blocks_with_listen(&fixed, "listen 80"), 2);
         assert!(fixed.contains("return 301 https://$host$request_uri;"));
+    }
+
+    #[test]
+    fn apply_all_fixes_writes_deduped_http_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.conf");
+        let content = r#"
+server {
+    listen 80;
+    server_name example.com;
+}
+server {
+    listen 80;
+    server_name example.com;
+}
+"#;
+        std::fs::write(&path, content).unwrap();
+        let report = apply_all_fixes(&path).unwrap();
+        assert_eq!(report.applied.len(), 1);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(count_server_blocks_with_listen(&after, "listen 80"), 1);
     }
 }

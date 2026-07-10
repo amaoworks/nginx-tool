@@ -1,6 +1,6 @@
 # ngtool
 
-`ngtool` 是 Nginx-Tools 的 TUI 版本，提供仪表盘、站点管理、证书、日志、服务控制和备份还原。
+`ngtool` 是 Nginx-Tools 的 TUI 版本，提供总览、站点、证书、日志、服务与备份管理。
 
 ## 运行
 

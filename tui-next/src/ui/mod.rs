@@ -199,17 +199,17 @@ fn footer_hints(state: &AppState) -> String {
     }
 
     let route_label = match &state.route {
-        Route::Dashboard => "仪表盘",
+        Route::Dashboard => "总览",
         Route::Sites(SitesRoute::List) => "站点列表",
         Route::Sites(SitesRoute::New) => "新建站点",
-        Route::Sites(SitesRoute::EditManaged { .. }) => "编辑站点 / 托管",
-        Route::Sites(SitesRoute::EditAdvanced { .. }) => "编辑站点 / 高级",
-        Route::Sites(SitesRoute::EditRaw { .. }) => "编辑站点 / 原始",
-        Route::Sites(SitesRoute::EditSlotFull { .. }) => "编辑站点 / 注入槽全屏",
-        Route::Certs => "证书管理",
-        Route::Logs => "日志查看",
-        Route::Service => "服务控制",
-        Route::Backup => "备份还原",
+        Route::Sites(SitesRoute::EditManaged { .. }) => "编辑 · 托管模式",
+        Route::Sites(SitesRoute::EditAdvanced { .. }) => "编辑 · 高级模式",
+        Route::Sites(SitesRoute::EditRaw { .. }) => "编辑 · 原始配置",
+        Route::Sites(SitesRoute::EditSlotFull { .. }) => "编辑 · 注入槽全屏",
+        Route::Certs => "证书",
+        Route::Logs => "日志",
+        Route::Service => "服务",
+        Route::Backup => "备份",
     };
 
     let tips: Vec<&'static str> = match &state.route {

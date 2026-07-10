@@ -16,7 +16,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let slot = edit.slot_edit_target.unwrap_or(edit.current_slot);
 
     let title = format!(
-        " 📁 站点管理 ▸ 编辑: {} ▸ 注入槽: {} ",
+        " 📁 站点 ▸ {} ▸ 注入槽: {} ",
         site_name,
         slot.label()
     );
