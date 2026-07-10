@@ -54,7 +54,8 @@ Nginx-Tools/
 │       └── risks.md
 ├── .github/
 │   └── workflows/
-│       └── release.yml     # CI 构建流程
+│       ├── ci.yml          # push/PR：cargo test + clippy（tui-next）
+│       └── release.yml     # tag：交叉编译并发布二进制
 ├── AGENTS.md
 ├── LICENSE                 # MIT
 └── README.md
@@ -69,13 +70,13 @@ Nginx-Tools/
 cd tui-next && cargo build --release
 
 # 运行单元测试 + 冒烟测试
-cd tui-next && cargo test
+cd tui-next && cargo test --locked
 
 # 运行冒烟测试（仅 P1）
 cd tui-next && cargo test --test smoke
 
-# Lint
-cd tui-next && cargo clippy -- -D warnings
+# Lint（与 CI 一致）
+cd tui-next && cargo clippy --locked --all-targets -- -D warnings
 ```
 
 - Release 配置：`opt-level = 3`，`lto = "thin"`，`strip = "symbols"`

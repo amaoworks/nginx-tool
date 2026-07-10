@@ -1,0 +1,53 @@
+name: ci
+
+# 日常回归：push / PR 时对 TUI 跑测试与 clippy
+# 发版构建仍由 release.yml（tag 触发）负责
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "tui-next/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "tui-next/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-tui:
+    name: test + clippy (tui-next)
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: tui-next
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tui-next/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('tui-next/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-
+
+      - name: cargo test
+        run: cargo test --locked
+
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
