@@ -328,21 +328,15 @@ fn render_global_actions(frame: &mut Frame, area: Rect, state: &AppState) {
             Style::default()
                 .fg(theme::FG_DIM)
                 .add_modifier(Modifier::DIM)
-        } else if focused {
-            focus::focused_button_style()
         } else {
-            Style::default().fg(theme::FG_NORMAL)
+            focus::button_style(focused)
         };
-        let surrounded = if focused {
-            format!("▶ {} ◀", label)
-        } else {
-            format!("[ {} ]", label)
-        };
+        let text = focus::button_label(&label);
         // 垂直居中一点：第二行有内容时第一行空
         let lines = if area.height >= 2 {
-            vec![Line::from(""), Line::from(Span::styled(surrounded, style))]
+            vec![Line::from(""), Line::from(Span::styled(text, style))]
         } else {
-            vec![Line::from(Span::styled(surrounded, style))]
+            vec![Line::from(Span::styled(text, style))]
         };
         frame.render_widget(Paragraph::new(lines), cols[i + 1]);
     }

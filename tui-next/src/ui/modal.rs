@@ -325,10 +325,6 @@ fn button_row(modal: &Modal) -> Paragraph<'_> {
     Paragraph::new(line).alignment(Alignment::Center)
 }
 
-fn render_button<'a>(label: &'a str, focused: bool) -> Span<'a> {
-    if focused {
-        Span::styled(format!("▶ {} ◀", label), focus::focused_button_style())
-    } else {
-        Span::styled(format!("[ {} ]", label), Style::default().fg(theme::FG_DIM))
-    }
+fn render_button(label: &str, focused: bool) -> Span<'static> {
+    Span::styled(focus::button_label(label), focus::button_style_muted(focused))
 }

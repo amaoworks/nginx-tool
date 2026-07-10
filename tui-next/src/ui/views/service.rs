@@ -109,17 +109,11 @@ fn render_buttons(frame: &mut Frame, area: Rect, state: &AppState) {
             Style::default()
                 .fg(theme::FG_DIM)
                 .add_modifier(Modifier::DIM)
-        } else if focused {
-            focus::focused_button_style()
         } else {
-            Style::default().fg(theme::FG_NORMAL)
+            focus::button_style(focused)
         };
-        let surrounded = if focused {
-            format!("▶ {} ◀", label)
-        } else {
-            format!("[ {} ]", label)
-        };
-        let lines = vec![Line::from(""), Line::from(Span::styled(surrounded, style))];
+        let text = focus::button_label(&label);
+        let lines = vec![Line::from(""), Line::from(Span::styled(text, style))];
         frame.render_widget(Paragraph::new(lines), cols[i]);
     }
 }

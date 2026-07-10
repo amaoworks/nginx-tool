@@ -44,3 +44,26 @@ pub fn focused_button_style() -> Style {
         .bg(theme::BG_SELECTED)
         .add_modifier(Modifier::BOLD)
 }
+
+/// 操作按钮文案：焦点与否都用 `[ label ]`，靠背景/加粗区分，不加 `▶ ◀`。
+pub fn button_label(label: &str) -> String {
+    format!("[ {} ]", label)
+}
+
+/// 常规按钮样式：焦点蓝底白字，否则普通前景色。
+pub fn button_style(focused: bool) -> Style {
+    if focused {
+        focused_button_style()
+    } else {
+        Style::default().fg(theme::FG_NORMAL)
+    }
+}
+
+/// 弹窗等次要按钮：未聚焦时用暗色，聚焦仍为蓝底。
+pub fn button_style_muted(focused: bool) -> Style {
+    if focused {
+        focused_button_style()
+    } else {
+        Style::default().fg(theme::FG_DIM)
+    }
+}

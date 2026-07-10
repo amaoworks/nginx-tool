@@ -284,19 +284,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         "创  建"
     };
-    let btn_style = if submit_focused {
-        focus::focused_button_style()
-    } else {
-        Style::default().fg(theme::FG_NORMAL)
-    };
-    let surrounded = if submit_focused {
-        format!("▶ {} ◀", btn_label)
-    } else {
-        format!("[ {} ]", btn_label)
-    };
+    let btn_style = focus::button_style(submit_focused);
     lines.push(Line::from(vec![
         Span::raw("          "),
-        Span::styled(surrounded, btn_style),
+        Span::styled(focus::button_label(btn_label), btn_style),
     ]));
 
     let scroll_offset = compute_scroll_offset(lines.len(), inner.height as usize, focused_line);
