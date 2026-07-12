@@ -146,10 +146,11 @@ fn render_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     };
     let manifest_summary = match &b.manifest {
         Some(m) => format!(
-            "范围: nginx.conf={}  文件={}  链接={}  目录={}  hostname={}  ngtool {}",
+            "范围: nginx.conf={}  文件={}  链接={}  证书文件={}  目录={}  hostname={}  ngtool {}",
             if m.scope.nginx_conf { "✓" } else { "✗" },
             m.scope.files.len(),
             m.scope.symlinks.len(),
+            m.scope.external_files.len(),
             m.scope.managed_directories.len(),
             m.hostname,
             m.ngtool_version

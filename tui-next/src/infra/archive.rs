@@ -3,8 +3,9 @@
 //! 仅做底层 I/O，不知道 manifest/checksum 等业务概念。备份范围限定由 domain 层负责。
 
 use std::fmt::Write as FmtWrite;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Read;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
@@ -22,7 +23,13 @@ pub fn create_tar_gz(out_path: &Path, entries: &[(PathBuf, Vec<u8>)]) -> std::io
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = File::create(out_path)?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(out_path)?;
+    std::fs::set_permissions(out_path, std::fs::Permissions::from_mode(0o600))?;
     let enc = GzEncoder::new(file, Compression::default());
     let mut tar = tar::Builder::new(enc);
     for (path, bytes) in entries {
@@ -110,6 +117,10 @@ mod tests {
         create_tar_gz(&archive, &entries).unwrap();
 
         let parsed = read_tar_gz(&archive).unwrap();
+        assert_eq!(
+            std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert_eq!(parsed.len(), 3);
         let names: Vec<_> = parsed
             .iter()

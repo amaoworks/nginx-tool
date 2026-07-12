@@ -39,6 +39,7 @@ impl AppState {
                         "  sites-available/、sites-enabled/".into(),
                         "  conf.d/、snippets/、stream-conf.d/".into(),
                         "  modules-enabled/（含符号链接关系）".into(),
+                        "  配置实际引用的 Let's Encrypt 证书依赖".into(),
                     ],
                     "确认创建",
                     crate::ui::modal::ModalAction::CreateBackup,
@@ -105,13 +106,34 @@ impl AppState {
                 return;
             }
         };
+        let missing_dependencies =
+            match crate::domain::backup::missing_dependencies_for_restore(&path) {
+                Ok(paths) => paths,
+                Err(e) => {
+                    self.notification =
+                        Some(Notification::failure(format!("无法校验备份依赖：{}", e)));
+                    return;
+                }
+            };
+        if !missing_dependencies.is_empty() {
+            self.notification = Some(Notification::failure(
+                "该备份未携带当前机器缺少的证书，无法安全还原".to_string(),
+            ));
+            self.backup.push_output([
+                "✗ 还原前检查失败：备份缺少证书依赖".into(),
+                format!("  缺少：{}", missing_dependencies.join(", ")),
+                "  请使用新版 TUI 在源机器重新创建备份后再还原".into(),
+            ]);
+            return;
+        }
 
         let mut body: Vec<String> = Vec::new();
         body.push(format!("时间：{}", created_at));
         body.push(format!(
-            "内容：{} 个文件，{} 个链接",
+            "内容：{} 个 Nginx 文件，{} 个链接，{} 个证书文件",
             manifest.scope.files.len(),
-            manifest.scope.symlinks.len()
+            manifest.scope.symlinks.len(),
+            manifest.scope.external_files.len()
         ));
         if !impact.will_enable.is_empty() {
             body.push(format!("将启用：{}", impact.will_enable.join(", ")));

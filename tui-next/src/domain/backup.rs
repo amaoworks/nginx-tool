@@ -8,6 +8,7 @@
 //! - `snippets/`
 //! - `stream-conf.d/`
 //! - `modules-enabled/`
+//! - Nginx 配置实际引用的 `/etc/letsencrypt` 证书依赖
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::os::unix::fs::PermissionsExt;
@@ -24,8 +25,11 @@ use crate::infra::archive::{create_tar_gz, read_tar_gz, sha256_hex};
 use crate::infra::audit::AuditResult;
 use crate::infra::AppContext;
 
-/// schema 2 扩大到完整的 Nginx 配置范围，并记录文件模式与符号链接。
-pub const MANIFEST_SCHEMA: u32 = 2;
+/// schema 3 在完整 Nginx 配置之外，携带配置实际引用的 Let's Encrypt 证书依赖。
+pub const MANIFEST_SCHEMA: u32 = 3;
+const MIN_RESTORABLE_SCHEMA: u32 = 2;
+const EXTERNAL_ARCHIVE_PREFIX: &str = "external";
+const LETSENCRYPT_ROOT: &str = "/etc/letsencrypt";
 
 const MANAGED_DIRS: &[&str] = &[
     "sites-available",
@@ -76,6 +80,21 @@ pub struct ManifestScope {
     pub files: Vec<ManifestFile>,
     #[serde(default)]
     pub symlinks: Vec<ManifestSymlink>,
+    /// 还原时会整体替换的 `/etc` 相对目录，目前仅允许 Let's Encrypt 证书 lineage。
+    #[serde(default)]
+    pub external_managed_directories: Vec<String>,
+    /// 还原时会替换的 `/etc` 相对文件，目前仅允许 Let's Encrypt 依赖文件。
+    #[serde(default)]
+    pub external_managed_files: Vec<String>,
+    #[serde(default)]
+    pub external_directories: Vec<String>,
+    #[serde(default)]
+    pub external_files: Vec<ManifestFile>,
+    #[serde(default)]
+    pub external_symlinks: Vec<ManifestSymlink>,
+    /// Nginx 配置直接引用的 `/etc/letsencrypt` 绝对路径，用于还原前依赖校验。
+    #[serde(default)]
+    pub external_dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,7 +125,7 @@ impl Backup {
     pub fn restorable(&self) -> bool {
         self.manifest
             .as_ref()
-            .map(|m| m.schema_version == MANIFEST_SCHEMA)
+            .map(|m| (MIN_RESTORABLE_SCHEMA..=MANIFEST_SCHEMA).contains(&m.schema_version))
             .unwrap_or(false)
     }
 
@@ -140,6 +159,8 @@ impl Backup {
 #[derive(Debug, Clone)]
 pub struct CreateBackupInput {
     pub source: BackupSource,
+    /// pre-restore 使用：额外保护目标备份将覆盖的证书路径。
+    pub extra_letsencrypt_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +252,7 @@ pub async fn create_backup(
         .tmp
         .join(format!("{}.{}.tar.gz.tmp", stem, std::process::id()));
     let source = input.source;
+    let extra_letsencrypt_refs = input.extra_letsencrypt_refs;
 
     let result = tokio::task::spawn_blocking(move || -> Result<PathBuf, NgToolError> {
         let mut scope = ManifestScope {
@@ -251,10 +273,36 @@ pub async fn create_backup(
             }
         }
 
+        let letsencrypt_refs = collect_letsencrypt_refs_from_entries(&entries);
+        collect_letsencrypt_dependencies(
+            &letsencrypt_refs,
+            false,
+            &mut scope,
+            &mut entries,
+            &mut checksums,
+        )?;
+        collect_letsencrypt_dependencies(
+            &extra_letsencrypt_refs,
+            true,
+            &mut scope,
+            &mut entries,
+            &mut checksums,
+        )?;
+
         scope.directories.sort();
         scope.directories.dedup();
         scope.files.sort_by(|a, b| a.path.cmp(&b.path));
         scope.symlinks.sort_by(|a, b| a.path.cmp(&b.path));
+        scope.external_managed_directories.sort();
+        scope.external_managed_directories.dedup();
+        scope.external_managed_files.sort();
+        scope.external_managed_files.dedup();
+        scope.external_directories.sort();
+        scope.external_directories.dedup();
+        scope.external_files.sort_by(|a, b| a.path.cmp(&b.path));
+        scope.external_symlinks.sort_by(|a, b| a.path.cmp(&b.path));
+        scope.external_dependencies.sort();
+        scope.external_dependencies.dedup();
 
         let manifest = Manifest {
             schema_version: MANIFEST_SCHEMA,
@@ -442,6 +490,194 @@ fn add_file(
     Ok(())
 }
 
+fn collect_letsencrypt_refs_from_entries(entries: &[(PathBuf, Vec<u8>)]) -> Vec<String> {
+    let re = regex::Regex::new(r#"/etc/letsencrypt/[^\s;#\"']+"#)
+        .expect("static letsencrypt path regex");
+    let mut refs = BTreeSet::new();
+    for (path, bytes) in entries {
+        if path == Path::new("manifest.toml") {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            continue;
+        };
+        refs.extend(re.find_iter(text).map(|m| m.as_str().to_string()));
+    }
+    refs.into_iter().collect()
+}
+
+fn collect_letsencrypt_dependencies(
+    refs: &[String],
+    existing_only: bool,
+    scope: &mut ManifestScope,
+    entries: &mut Vec<(PathBuf, Vec<u8>)>,
+    checksums: &mut BTreeMap<String, String>,
+) -> Result<(), NgToolError> {
+    collect_letsencrypt_dependencies_at(
+        Path::new(LETSENCRYPT_ROOT),
+        refs,
+        existing_only,
+        scope,
+        entries,
+        checksums,
+    )
+}
+
+fn collect_letsencrypt_dependencies_at(
+    root: &Path,
+    refs: &[String],
+    existing_only: bool,
+    scope: &mut ManifestScope,
+    entries: &mut Vec<(PathBuf, Vec<u8>)>,
+    checksums: &mut BTreeMap<String, String>,
+) -> Result<(), NgToolError> {
+    let mut paths = BTreeSet::new();
+    for value in refs {
+        let path = Path::new(value);
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        if !is_safe_relative(rel) || rel.as_os_str().is_empty() {
+            continue;
+        }
+        // Prefer symlink_metadata so live/*.pem symlinks still count when present,
+        // even if the target is temporarily broken.
+        let present = std::fs::symlink_metadata(path).is_ok();
+
+        // Manual backup (existing_only=false): keep all config refs for restore-time
+        // dependency checks. Pre-restore extras (existing_only=true): only refs that
+        // exist on this machine (nothing to protect otherwise).
+        if !existing_only || present {
+            scope.external_dependencies.push(value.clone());
+        }
+
+        // Never expand/package missing paths. Expanding a missing live lineage would
+        // otherwise feed empty managed markers into the snapshot and delete the
+        // corresponding certificates on the restore target without restoring content.
+        if !present {
+            continue;
+        }
+
+        if rel.starts_with("live") {
+            if let Some(name) = rel.components().nth(1).and_then(component_str) {
+                paths.insert(root.join("live").join(name));
+                paths.insert(root.join("archive").join(name));
+                paths.insert(root.join("renewal").join(format!("{}.conf", name)));
+                continue;
+            }
+        }
+        paths.insert(path.to_path_buf());
+    }
+
+    for path in paths {
+        collect_external_path(root, &path, true, scope, entries, checksums)?;
+    }
+    Ok(())
+}
+
+fn component_str(component: Component<'_>) -> Option<&str> {
+    match component {
+        Component::Normal(value) => value.to_str(),
+        _ => None,
+    }
+}
+
+fn collect_external_path(
+    root: &Path,
+    path: &Path,
+    managed: bool,
+    scope: &mut ManifestScope,
+    entries: &mut Vec<(PathBuf, Vec<u8>)>,
+    checksums: &mut BTreeMap<String, String>,
+) -> Result<(), NgToolError> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        // Missing path: do not mark as managed. Empty managed entries cause
+        // apply_external_snapshot to delete the target path without writing content.
+        return Ok(());
+    };
+    let archive_path = external_archive_path(root, path)?;
+    let archive_string = archive_path.to_string_lossy().into_owned();
+    if scope
+        .external_directories
+        .iter()
+        .chain(scope.external_files.iter().map(|file| &file.path))
+        .chain(scope.external_symlinks.iter().map(|link| &link.path))
+        .any(|existing| existing == &archive_string)
+    {
+        return Ok(());
+    }
+    if meta.file_type().is_symlink() {
+        if managed {
+            scope.external_managed_files.push(archive_string.clone());
+        }
+        let target = std::fs::read_link(path).map_err(|e| NgToolError::FileOperationFailed {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        scope.external_symlinks.push(ManifestSymlink {
+            path: archive_string,
+            target: target.to_string_lossy().into_owned(),
+        });
+    } else if meta.is_dir() {
+        if managed {
+            scope
+                .external_managed_directories
+                .push(archive_string.clone());
+        }
+        scope.external_directories.push(archive_string);
+        let mut children: Vec<_> = std::fs::read_dir(path)
+            .map_err(|e| NgToolError::FileOperationFailed {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            })?
+            .filter_map(Result::ok)
+            .collect();
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            collect_external_path(root, &child.path(), false, scope, entries, checksums)?;
+        }
+    } else if meta.is_file() {
+        if managed {
+            scope.external_managed_files.push(archive_string.clone());
+        }
+        let bytes = std::fs::read(path).map_err(|e| NgToolError::FileOperationFailed {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        checksums.insert(
+            archive_string.clone(),
+            format!("sha256:{}", sha256_hex(&bytes)),
+        );
+        scope.external_files.push(ManifestFile {
+            path: archive_string.clone(),
+            mode: meta.permissions().mode() & 0o7777,
+        });
+        entries.push((PathBuf::from(archive_string), bytes));
+    }
+    Ok(())
+}
+
+fn external_archive_path(root: &Path, path: &Path) -> Result<PathBuf, NgToolError> {
+    let rel = path
+        .strip_prefix(root)
+        .ok()
+        .filter(|rel| is_safe_relative(rel) && !rel.as_os_str().is_empty())
+        .ok_or_else(|| NgToolError::InvalidInput {
+            field: "backup_path".into(),
+            message: format!("不安全的证书依赖路径：{}", path.display()),
+        })?;
+    Ok(Path::new(EXTERNAL_ARCHIVE_PREFIX)
+        .join("etc/letsencrypt")
+        .join(rel))
+}
+
+fn is_safe_relative(path: &Path) -> bool {
+    !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
 fn relative_string(root: &Path, path: &Path) -> Result<String, NgToolError> {
     path.strip_prefix(root)
         .ok()
@@ -581,6 +817,12 @@ pub fn impact_for_restore(ctx: &AppContext, manifest: &Manifest) -> std::io::Res
     })
 }
 
+pub fn missing_dependencies_for_restore(archive: &Path) -> Result<Vec<String>, NgToolError> {
+    let snapshot = load_snapshot_sync(archive)?;
+    validate_snapshot(&snapshot)?;
+    Ok(missing_restore_dependencies(&snapshot))
+}
+
 fn collect_relative_entries(dir: &Path) -> std::io::Result<HashSet<String>> {
     if !dir.is_dir() {
         return Ok(HashSet::new());
@@ -595,6 +837,66 @@ fn collect_relative_entries(dir: &Path) -> std::io::Result<HashSet<String>> {
     Ok(out)
 }
 
+fn collect_letsencrypt_refs_from_snapshot(snapshot: &Snapshot) -> Vec<String> {
+    let entries: Vec<_> = snapshot
+        .manifest
+        .scope
+        .files
+        .iter()
+        .filter_map(|file| {
+            snapshot
+                .files
+                .get(&file.path)
+                .map(|bytes| (PathBuf::from(&file.path), bytes.clone()))
+        })
+        .collect();
+    collect_letsencrypt_refs_from_entries(&entries)
+}
+
+fn external_dependency_is_packaged(manifest: &Manifest, dependency: &str) -> bool {
+    let Ok(rel) = Path::new(dependency).strip_prefix(LETSENCRYPT_ROOT) else {
+        return false;
+    };
+    let archive_path = Path::new(EXTERNAL_ARCHIVE_PREFIX)
+        .join("etc/letsencrypt")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned();
+    manifest
+        .scope
+        .external_files
+        .iter()
+        .any(|file| file.path == archive_path)
+        || manifest
+            .scope
+            .external_symlinks
+            .iter()
+            .any(|link| link.path == archive_path)
+}
+
+fn validate_restore_dependencies(snapshot: &Snapshot) -> Result<(), NgToolError> {
+    let missing = missing_restore_dependencies(snapshot);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(NgToolError::InvalidInput {
+        field: "backup".into(),
+        message: format!(
+            "备份未包含且当前机器缺少证书依赖：{}。请使用新版 TUI 在源机器重新创建备份后再还原",
+            missing.join(", ")
+        ),
+    })
+}
+
+fn missing_restore_dependencies(snapshot: &Snapshot) -> Vec<String> {
+    collect_letsencrypt_refs_from_snapshot(snapshot)
+        .into_iter()
+        .filter(|path| {
+            !Path::new(path).exists() && !external_dependency_is_packaged(&snapshot.manifest, path)
+        })
+        .collect()
+}
+
 pub async fn restore_backup(
     ctx: Arc<AppContext>,
     archive_path: PathBuf,
@@ -602,11 +904,14 @@ pub async fn restore_backup(
     let started = Instant::now();
     let snapshot = load_snapshot(archive_path.clone()).await?;
     validate_snapshot(&snapshot)?;
+    validate_restore_dependencies(&snapshot)?;
+    let target_letsencrypt_refs = collect_letsencrypt_refs_from_snapshot(&snapshot);
 
     let pre = create_backup(
         ctx.clone(),
         CreateBackupInput {
             source: BackupSource::PreRestore,
+            extra_letsencrypt_refs: target_letsencrypt_refs,
         },
     )
     .await?;
@@ -726,7 +1031,7 @@ fn load_snapshot_sync(path: &Path) -> Result<Snapshot, NgToolError> {
 
 fn validate_snapshot(snapshot: &Snapshot) -> Result<(), NgToolError> {
     let manifest = &snapshot.manifest;
-    if manifest.schema_version != MANIFEST_SCHEMA {
+    if !(MIN_RESTORABLE_SCHEMA..=MANIFEST_SCHEMA).contains(&manifest.schema_version) {
         return Err(NgToolError::InvalidInput {
             field: "manifest".into(),
             message: format!(
@@ -783,12 +1088,87 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<(), NgToolError> {
             return Err(parse_error(&link.path, "manifest 路径重复"));
         }
     }
+    for path in &manifest.scope.external_managed_directories {
+        validate_external_path(path)?;
+        validate_external_managed_path(path, true)?;
+    }
+    for path in &manifest.scope.external_managed_files {
+        validate_external_path(path)?;
+        validate_external_managed_path(path, false)?;
+    }
+    for dir in &manifest.scope.external_directories {
+        validate_external_path(dir)?;
+        if !paths.insert(dir.as_str()) {
+            return Err(parse_error(dir, "manifest 路径重复"));
+        }
+    }
+    for file in &manifest.scope.external_files {
+        validate_external_path(&file.path)?;
+        if !paths.insert(file.path.as_str()) {
+            return Err(parse_error(&file.path, "manifest 路径重复"));
+        }
+        let bytes = snapshot
+            .files
+            .get(&file.path)
+            .ok_or_else(|| parse_error(&file.path, "manifest 声明的文件在归档中缺失"))?;
+        let expected = manifest
+            .checksums
+            .get(&file.path)
+            .ok_or_else(|| parse_error(&file.path, "文件 checksum 缺失"))?;
+        let actual = format!("sha256:{}", sha256_hex(bytes));
+        if &actual != expected {
+            return Err(parse_error(&file.path, "checksum 不一致"));
+        }
+    }
+    for link in &manifest.scope.external_symlinks {
+        validate_external_path(&link.path)?;
+        if link.target.is_empty() {
+            return Err(parse_error(&link.path, "符号链接目标为空"));
+        }
+        validate_external_symlink_target(&link.path, &link.target)?;
+        if !paths.insert(link.path.as_str()) {
+            return Err(parse_error(&link.path, "manifest 路径重复"));
+        }
+    }
+    for path in manifest
+        .scope
+        .external_directories
+        .iter()
+        .chain(manifest.scope.external_files.iter().map(|file| &file.path))
+        .chain(
+            manifest
+                .scope
+                .external_symlinks
+                .iter()
+                .map(|link| &link.path),
+        )
+    {
+        if !external_path_is_managed(&manifest.scope, path) {
+            return Err(parse_error(path, "证书归档路径未被声明的还原范围覆盖"));
+        }
+    }
+    for dependency in &manifest.scope.external_dependencies {
+        let path = Path::new(dependency);
+        let Ok(rel) = path.strip_prefix(LETSENCRYPT_ROOT) else {
+            return Err(parse_error(dependency, "证书依赖不在 /etc/letsencrypt 下"));
+        };
+        if !is_safe_relative(rel) || rel.as_os_str().is_empty() {
+            return Err(parse_error(dependency, "证书依赖路径不安全"));
+        }
+    }
 
     let symlink_paths: HashSet<&str> = manifest
         .scope
         .symlinks
         .iter()
         .map(|link| link.path.as_str())
+        .chain(
+            manifest
+                .scope
+                .external_symlinks
+                .iter()
+                .map(|link| link.path.as_str()),
+        )
         .collect();
     for path in paths.iter().copied() {
         let mut parent = Path::new(path).parent();
@@ -810,6 +1190,13 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<(), NgToolError> {
         .files
         .iter()
         .map(|f| f.path.as_str())
+        .chain(
+            manifest
+                .scope
+                .external_files
+                .iter()
+                .map(|f| f.path.as_str()),
+        )
         .collect();
     let checksum_paths: BTreeSet<&str> = manifest.checksums.keys().map(String::as_str).collect();
     let archive_paths: BTreeSet<&str> = snapshot.files.keys().map(String::as_str).collect();
@@ -818,6 +1205,62 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<(), NgToolError> {
             "manifest",
             "文件、checksum 与归档条目不完全一致",
         ));
+    }
+    Ok(())
+}
+
+fn validate_external_path(path: &str) -> Result<(), NgToolError> {
+    let prefix = Path::new(EXTERNAL_ARCHIVE_PREFIX).join("etc/letsencrypt");
+    let rel = Path::new(path)
+        .strip_prefix(&prefix)
+        .map_err(|_| parse_error(path, "外部路径不在允许的证书范围内"))?;
+    if rel.as_os_str().is_empty() || !is_safe_relative(rel) {
+        return Err(parse_error(path, "外部路径必须是安全的相对路径"));
+    }
+    Ok(())
+}
+
+fn validate_external_managed_path(path: &str, directory: bool) -> Result<(), NgToolError> {
+    let prefix = Path::new(EXTERNAL_ARCHIVE_PREFIX).join("etc/letsencrypt");
+    let rel = Path::new(path)
+        .strip_prefix(prefix)
+        .map_err(|_| parse_error(path, "外部管理路径无效"))?;
+    let parts: Vec<_> = rel.components().filter_map(component_str).collect();
+    let valid = if directory {
+        parts.len() == 2 && matches!(parts[0], "live" | "archive")
+    } else {
+        (parts.len() == 2 && parts[0] == "renewal" && parts[1].ends_with(".conf"))
+            || parts.len() == 1
+    };
+    if !valid {
+        return Err(parse_error(path, "外部管理路径超出允许的证书范围"));
+    }
+    Ok(())
+}
+
+fn external_path_is_managed(scope: &ManifestScope, path: &str) -> bool {
+    scope.external_managed_files.iter().any(|item| item == path)
+        || scope.external_managed_directories.iter().any(|dir| {
+            Path::new(path)
+                .strip_prefix(dir)
+                .is_ok_and(|rel| rel.as_os_str().is_empty() || is_safe_relative(rel))
+        })
+}
+
+fn validate_external_symlink_target(path: &str, target: &str) -> Result<(), NgToolError> {
+    let target_path = Path::new(target);
+    let safe = if target_path.is_absolute() {
+        target_path
+            .strip_prefix(LETSENCRYPT_ROOT)
+            .is_ok_and(|rel| !rel.as_os_str().is_empty() && is_safe_relative(rel))
+    } else {
+        Path::new(path)
+            .parent()
+            .and_then(|parent| normalize_relative(&parent.join(target_path)))
+            .is_some_and(|resolved| resolved.starts_with("external/etc/letsencrypt/"))
+    };
+    if !safe {
+        return Err(parse_error(path, "证书符号链接目标超出 /etc/letsencrypt"));
     }
     Ok(())
 }
@@ -859,6 +1302,7 @@ async fn apply_snapshot_async(root: PathBuf, snapshot: Snapshot) -> Result<(), N
 
 fn apply_snapshot(root: &Path, snapshot: &Snapshot) -> Result<(), NgToolError> {
     validate_snapshot(snapshot)?;
+    apply_external_snapshot(Path::new("/"), snapshot)?;
 
     for dir in MANAGED_DIRS {
         let path = root.join(dir);
@@ -943,6 +1387,58 @@ fn apply_snapshot(root: &Path, snapshot: &Snapshot) -> Result<(), NgToolError> {
         })?;
     }
     Ok(())
+}
+
+fn apply_external_snapshot(root: &Path, snapshot: &Snapshot) -> Result<(), NgToolError> {
+    for rel in &snapshot.manifest.scope.external_managed_directories {
+        remove_path(&external_target(root, rel)?)?;
+    }
+    for rel in &snapshot.manifest.scope.external_managed_files {
+        remove_path(&external_target(root, rel)?)?;
+    }
+
+    let mut directories = snapshot.manifest.scope.external_directories.clone();
+    directories.sort_by_key(|path| Path::new(path).components().count());
+    for rel in directories {
+        let path = external_target(root, &rel)?;
+        std::fs::create_dir_all(&path).map_err(|e| NgToolError::FileOperationFailed {
+            path,
+            message: e.to_string(),
+        })?;
+    }
+    for file in &snapshot.manifest.scope.external_files {
+        let target = external_target(root, &file.path)?;
+        let bytes = snapshot
+            .files
+            .get(&file.path)
+            .ok_or_else(|| parse_error(&file.path, "归档文件缺失"))?;
+        atomic_write_replace(&target, bytes, file.mode)?;
+    }
+    for link in &snapshot.manifest.scope.external_symlinks {
+        let path = external_target(root, &link.path)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| NgToolError::FileOperationFailed {
+                path: parent.to_path_buf(),
+                message: e.to_string(),
+            })?;
+        }
+        remove_path(&path)?;
+        std::os::unix::fs::symlink(&link.target, &path).map_err(|e| {
+            NgToolError::FileOperationFailed {
+                path,
+                message: e.to_string(),
+            }
+        })?;
+    }
+    Ok(())
+}
+
+fn external_target(root: &Path, archive_path: &str) -> Result<PathBuf, NgToolError> {
+    validate_external_path(archive_path)?;
+    let rel = Path::new(archive_path)
+        .strip_prefix(EXTERNAL_ARCHIVE_PREFIX)
+        .map_err(|_| parse_error(archive_path, "外部路径前缀无效"))?;
+    Ok(root.join(rel))
 }
 
 fn remove_path(path: &Path) -> Result<(), NgToolError> {
@@ -1085,6 +1581,7 @@ mod tests {
                     mode: 0o644,
                 }],
                 symlinks: vec![],
+                ..ManifestScope::default()
             },
             checksums,
         }
@@ -1097,6 +1594,171 @@ mod tests {
         let back: Manifest = toml::from_str(&text).unwrap();
         assert_eq!(back.schema_version, MANIFEST_SCHEMA);
         assert_eq!(back.scope.files[0].path, "nginx.conf");
+    }
+
+    #[test]
+    fn schema_two_backup_remains_restorable() {
+        let mut manifest = sample_manifest();
+        manifest.schema_version = 2;
+        let backup = Backup {
+            path: PathBuf::from("old.tar.gz"),
+            name: "old.tar.gz".into(),
+            size: 0,
+            mtime: SystemTime::UNIX_EPOCH,
+            manifest: Some(manifest),
+        };
+        assert!(backup.restorable());
+    }
+
+    #[test]
+    fn extracts_letsencrypt_dependencies_from_nginx_config() {
+        let entries = vec![(
+            PathBuf::from("sites-available/app.conf"),
+            br#"ssl_certificate /etc/letsencrypt/live/app/fullchain.pem;
+ssl_certificate_key "/etc/letsencrypt/live/app/privkey.pem";
+include /etc/letsencrypt/options-ssl-nginx.conf;"#
+                .to_vec(),
+        )];
+        assert_eq!(
+            collect_letsencrypt_refs_from_entries(&entries),
+            vec![
+                "/etc/letsencrypt/live/app/fullchain.pem".to_string(),
+                "/etc/letsencrypt/live/app/privkey.pem".to_string(),
+                "/etc/letsencrypt/options-ssl-nginx.conf".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_external_path_is_not_marked_managed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let missing = root.join("live/missing-app");
+        let mut scope = ManifestScope::default();
+        let mut entries = Vec::new();
+        let mut checksums = BTreeMap::new();
+
+        collect_external_path(
+            root,
+            &missing,
+            true,
+            &mut scope,
+            &mut entries,
+            &mut checksums,
+        )
+        .unwrap();
+
+        assert!(scope.external_managed_directories.is_empty());
+        assert!(scope.external_managed_files.is_empty());
+        assert!(scope.external_directories.is_empty());
+        assert!(scope.external_files.is_empty());
+        assert!(scope.external_symlinks.is_empty());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn missing_letsencrypt_ref_does_not_create_empty_managed_lineage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let missing_ref = root
+            .join("live/missing-app/fullchain.pem")
+            .to_string_lossy()
+            .into_owned();
+
+        // Manual: still records the dependency for restore-time checks, but must not
+        // expand a missing lineage into destructive managed markers.
+        let mut scope = ManifestScope::default();
+        let mut entries = Vec::new();
+        let mut checksums = BTreeMap::new();
+        collect_letsencrypt_dependencies_at(
+            root,
+            std::slice::from_ref(&missing_ref),
+            false,
+            &mut scope,
+            &mut entries,
+            &mut checksums,
+        )
+        .unwrap();
+        assert_eq!(scope.external_dependencies, vec![missing_ref.clone()]);
+        assert!(scope.external_managed_directories.is_empty());
+        assert!(scope.external_managed_files.is_empty());
+        assert!(entries.is_empty());
+
+        // Pre-restore extras (existing_only): missing refs are skipped entirely.
+        let mut scope = ManifestScope::default();
+        let mut entries = Vec::new();
+        let mut checksums = BTreeMap::new();
+        collect_letsencrypt_dependencies_at(
+            root,
+            std::slice::from_ref(&missing_ref),
+            true,
+            &mut scope,
+            &mut entries,
+            &mut checksums,
+        )
+        .unwrap();
+        assert!(scope.external_dependencies.is_empty());
+        assert!(scope.external_managed_directories.is_empty());
+        assert!(scope.external_managed_files.is_empty());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn present_letsencrypt_lineage_is_packaged_and_managed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let live_dir = root.join("live/app");
+        let archive_dir = root.join("archive/app");
+        let renewal_dir = root.join("renewal");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::create_dir_all(&renewal_dir).unwrap();
+        std::fs::write(archive_dir.join("fullchain1.pem"), b"cert").unwrap();
+        std::os::unix::fs::symlink(
+            "../../archive/app/fullchain1.pem",
+            live_dir.join("fullchain.pem"),
+        )
+        .unwrap();
+        std::fs::write(renewal_dir.join("app.conf"), b"renewal").unwrap();
+
+        let live_ref = live_dir
+            .join("fullchain.pem")
+            .to_string_lossy()
+            .into_owned();
+        let mut scope = ManifestScope::default();
+        let mut entries = Vec::new();
+        let mut checksums = BTreeMap::new();
+        collect_letsencrypt_dependencies_at(
+            root,
+            std::slice::from_ref(&live_ref),
+            false,
+            &mut scope,
+            &mut entries,
+            &mut checksums,
+        )
+        .unwrap();
+
+        assert_eq!(scope.external_dependencies, vec![live_ref]);
+        assert!(scope
+            .external_managed_directories
+            .iter()
+            .any(|p| p == "external/etc/letsencrypt/live/app"));
+        assert!(scope
+            .external_managed_directories
+            .iter()
+            .any(|p| p == "external/etc/letsencrypt/archive/app"));
+        assert!(scope
+            .external_managed_files
+            .iter()
+            .any(|p| p == "external/etc/letsencrypt/renewal/app.conf"));
+        assert!(scope.external_symlinks.iter().any(|link| {
+            link.path == "external/etc/letsencrypt/live/app/fullchain.pem"
+                && link.target == "../../archive/app/fullchain1.pem"
+        }));
+        assert!(entries.iter().any(|(path, bytes)| {
+            path == Path::new("external/etc/letsencrypt/archive/app/fullchain1.pem")
+                && bytes == b"cert"
+        }));
     }
 
     #[test]
@@ -1174,6 +1836,7 @@ mod tests {
                         path: "sites-enabled/app.conf".into(),
                         target: "../sites-available/app.conf".into(),
                     }],
+                    ..ManifestScope::default()
                 },
                 checksums,
             },
@@ -1203,6 +1866,70 @@ mod tests {
                 .mode()
                 & 0o777,
             0o640
+        );
+    }
+
+    #[test]
+    fn apply_external_snapshot_restores_certificate_lineage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let cert = b"certificate".to_vec();
+        let key = b"private-key".to_vec();
+        let cert_path = "external/etc/letsencrypt/archive/app/fullchain1.pem";
+        let key_path = "external/etc/letsencrypt/archive/app/privkey1.pem";
+        let mut files = BTreeMap::new();
+        files.insert("nginx.conf".into(), b"x".to_vec());
+        files.insert(cert_path.into(), cert.clone());
+        files.insert(key_path.into(), key.clone());
+        let mut manifest = sample_manifest();
+        manifest.scope.external_managed_directories = vec![
+            "external/etc/letsencrypt/archive/app".into(),
+            "external/etc/letsencrypt/live/app".into(),
+        ];
+        manifest.scope.external_directories = manifest.scope.external_managed_directories.clone();
+        manifest.scope.external_files = vec![
+            ManifestFile {
+                path: cert_path.into(),
+                mode: 0o644,
+            },
+            ManifestFile {
+                path: key_path.into(),
+                mode: 0o600,
+            },
+        ];
+        manifest.scope.external_symlinks = vec![ManifestSymlink {
+            path: "external/etc/letsencrypt/live/app/fullchain.pem".into(),
+            target: "../../archive/app/fullchain1.pem".into(),
+        }];
+        manifest
+            .checksums
+            .insert(cert_path.into(), format!("sha256:{}", sha256_hex(&cert)));
+        manifest
+            .checksums
+            .insert(key_path.into(), format!("sha256:{}", sha256_hex(&key)));
+        let snapshot = Snapshot { manifest, files };
+
+        apply_external_snapshot(root, &snapshot).unwrap();
+
+        assert_eq!(
+            std::fs::read(root.join("etc/letsencrypt/archive/app/fullchain1.pem")).unwrap(),
+            cert
+        );
+        assert_eq!(
+            std::fs::read(root.join("etc/letsencrypt/archive/app/privkey1.pem")).unwrap(),
+            key
+        );
+        assert_eq!(
+            std::fs::read_link(root.join("etc/letsencrypt/live/app/fullchain.pem")).unwrap(),
+            PathBuf::from("../../archive/app/fullchain1.pem")
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("etc/letsencrypt/archive/app/privkey1.pem"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
         );
     }
 }

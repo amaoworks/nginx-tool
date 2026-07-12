@@ -388,6 +388,7 @@ async fn run(terminal: &mut Tui, ctx: Arc<AppContext>) -> anyhow::Result<()> {
                     ctx_clone,
                     domain::backup::CreateBackupInput {
                         source: domain::backup::BackupSource::Manual,
+                        extra_letsencrypt_refs: Vec::new(),
                     },
                 )
                 .await;
