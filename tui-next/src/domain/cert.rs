@@ -322,9 +322,8 @@ fn collect_ssl_certificate_refs(nginx_root: &Path) -> HashSet<String> {
         .filter(|entry| entry.file_type().is_file())
     {
         let path = entry.path();
-        if !looks_like_nginx_config(path) {
-            continue;
-        }
+        // Nginx include 不要求扩展名，例如 Debian 默认站点名为 default。
+        // 清理证书时保守扫描所有文本文件，避免漏掉仍在使用的证书。
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
@@ -337,9 +336,18 @@ fn collect_ssl_certificate_refs(nginx_root: &Path) -> HashSet<String> {
     refs
 }
 
-fn looks_like_nginx_config(path: &Path) -> bool {
-    path.extension().and_then(|s| s.to_str()) == Some("conf")
-        || path.file_name().and_then(|s| s.to_str()) == Some("nginx.conf")
+fn ensure_cert_unreferenced(nginx_root: &Path, cert_name: &str) -> Result<(), NgToolError> {
+    let reference = format!("/live/{cert_name}/");
+    if collect_ssl_certificate_refs(nginx_root)
+        .iter()
+        .any(|path| path.contains(&reference))
+    {
+        return Err(NgToolError::InvalidInput {
+            field: "cert_name".into(),
+            message: format!("证书 {cert_name} 仍被 Nginx 配置引用，拒绝删除"),
+        });
+    }
+    Ok(())
 }
 
 fn cert_is_referenced(cert: &Certificate, refs: &HashSet<String>) -> bool {
@@ -517,6 +525,16 @@ pub async fn delete_cert(ctx: Arc<AppContext>, cert_name: &str) -> Result<String
             message: "证书名称不能为空".into(),
         });
     }
+    // 确认弹窗与队列执行之间配置可能变化，不能仅信任证书页的候选缓存。
+    let nginx_root =
+        ctx.probe
+            .sites_available
+            .parent()
+            .ok_or_else(|| NgToolError::InvalidInput {
+                field: "nginx_root".into(),
+                message: "无法确定 Nginx 配置目录，拒绝删除证书".into(),
+            })?;
+    ensure_cert_unreferenced(nginx_root, cert_name)?;
     match ctx
         .executor
         .run(
@@ -843,6 +861,53 @@ Found the following certs:
         assert!(!assoc[0].nginx_referenced);
         assert!(assoc[1].orphan);
         assert!(assoc[1].site_names.is_empty());
+    }
+
+    #[test]
+    fn cleanup_protects_default_and_arbitrary_include_names() -> anyhow::Result<()> {
+        for filename in ["default", "gpt.brs.qzz.io", "app.conf"] {
+            let tmp = tempfile::tempdir()?;
+            let nginx_root = tmp.path().join("nginx");
+            let sites_enabled = nginx_root.join("sites-enabled");
+            std::fs::create_dir_all(&sites_enabled)?;
+            // 目标位于扫描根目录外，必须通过无扩展名的启用链接发现引用。
+            let config = tmp.path().join("external-site");
+            std::fs::write(
+                &config,
+                "server { ssl_certificate /etc/letsencrypt/live/gpt.brs.qzz.io/fullchain.pem; }",
+            )?;
+            std::os::unix::fs::symlink(&config, sites_enabled.join(filename))?;
+            let mut items = vec![CertWithSite {
+                cert: Certificate {
+                    name: "gpt.brs.qzz.io".into(),
+                    domains: vec!["gpt.brs.qzz.io".into()],
+                    expiry: None,
+                    days_left: None,
+                    level: None,
+                    cert_path: Some("/etc/letsencrypt/live/gpt.brs.qzz.io/fullchain.pem".into()),
+                },
+                site_names: Vec::new(),
+                orphan: true,
+                nginx_referenced: false,
+            }];
+            mark_nginx_references(&mut items, &nginx_root);
+            assert!(cleanup_candidates(&items).is_empty(), "{filename}");
+            assert!(ensure_cert_unreferenced(&nginx_root, "gpt.brs.qzz.io").is_err());
+            assert!(ensure_cert_unreferenced(&nginx_root, "gpt").is_ok());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn delete_guard_reads_current_references() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        assert!(ensure_cert_unreferenced(tmp.path(), "gpt").is_ok());
+        std::fs::write(
+            tmp.path().join("default"),
+            "ssl_certificate /etc/letsencrypt/live/gpt/fullchain.pem;",
+        )?;
+        assert!(ensure_cert_unreferenced(tmp.path(), "gpt").is_err());
+        Ok(())
     }
 
     #[test]
