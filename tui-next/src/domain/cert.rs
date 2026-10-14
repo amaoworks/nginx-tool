@@ -93,8 +93,10 @@ pub struct CertWithSite {
 pub fn parse_certificates(text: &str) -> Vec<Certificate> {
     let name_re = regex::Regex::new(r"(?m)^\s*Certificate Name:\s*(.+)$").unwrap();
     let domains_re = regex::Regex::new(r"(?m)^\s*Domains:\s*(.+)$").unwrap();
-    let expiry_re =
-        regex::Regex::new(r"(?m)^\s*Expiry Date:\s*([0-9T:\-+ ]+)\s*\(.*?(\-?\d+)\s*day").unwrap();
+    let expiry_re = regex::Regex::new(
+        r"(?m)^\s*Expiry Date:\s*([0-9T:\-+ ]+)\s*\((?:.*?(\-?\d+)\s*days?|INVALID:\s*(EXPIRED))\)",
+    )
+    .unwrap();
     let path_re = regex::Regex::new(r"(?m)^\s*Certificate Path:\s*(.+)$").unwrap();
 
     // 按 Certificate Name 锚点切块，逐块在内部正则提取字段。
@@ -135,8 +137,18 @@ pub fn parse_certificates(text: &str) -> Vec<Certificate> {
         let (expiry, days_left) = match expiry_re.captures(block) {
             Some(cap) => {
                 let raw_ts = cap.get(1).map(|m| m.as_str().trim().to_string());
-                let days = cap.get(2).and_then(|m| m.as_str().parse::<i64>().ok());
                 let dt = raw_ts.as_deref().and_then(parse_certbot_timestamp);
+                let days = cap
+                    .get(2)
+                    .and_then(|m| m.as_str().parse::<i64>().ok())
+                    .or_else(|| {
+                        // Certbot 的过期输出没有天数；不足一天也必须标记为负数。
+                        cap.get(3).map(|_| {
+                            dt.map_or(-1, |expiry| {
+                                expiry.signed_duration_since(Utc::now()).num_days().min(-1)
+                            })
+                        })
+                    });
                 (dt, days)
             }
             None => (None, None),
@@ -373,8 +385,179 @@ fn letsencrypt_live_name(path: &str) -> Option<&str> {
     parts.get(live_pos + 1).copied()
 }
 
-/// 按域名集合申请证书。`certbot certonly --nginx -d <d1> -d <d2> ...`
-/// 长任务由主循环异步派发，本函数自身阻塞至 certbot 返回。
+/// 站点证书怎么落地。先决定计划，再决定要不要调 certbot。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertIssuePlan {
+    /// 已有未过期证书覆盖全部域名，直接写回 Nginx。
+    Reuse { cert_name: String },
+    /// 扩展已有 lineage，使它覆盖站点的全部域名。
+    Expand { cert_name: String },
+    /// 新建以站点名命名的证书。
+    Issue { cert_name: String },
+}
+
+fn normalize_domain(domain: &str) -> String {
+    domain.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn wanted_domains(domains: &[String]) -> Vec<String> {
+    let mut wanted = Vec::new();
+    for domain in domains {
+        let normalized = normalize_domain(domain);
+        if !normalized.is_empty() && !wanted.contains(&normalized) {
+            wanted.push(normalized);
+        }
+    }
+    wanted
+}
+
+fn cert_domain_set(cert: &Certificate) -> HashSet<String> {
+    cert.domains
+        .iter()
+        .map(|domain| normalize_domain(domain.as_str()))
+        .filter(|domain| !domain.is_empty())
+        .collect()
+}
+
+impl CertIssuePlan {
+    fn cert_name(&self) -> &str {
+        match self {
+            CertIssuePlan::Reuse { cert_name }
+            | CertIssuePlan::Expand { cert_name }
+            | CertIssuePlan::Issue { cert_name } => cert_name,
+        }
+    }
+}
+
+fn cert_is_usable(cert: &Certificate) -> bool {
+    !matches!(cert.level, Some(CertLevel::Expired))
+        && cert.days_left.is_some_and(|days| days >= 0)
+        && cert.expiry.map_or(true, |expiry| expiry > Utc::now())
+}
+
+fn cert_covers(cert: &Certificate, wanted: &[String]) -> bool {
+    let have = cert_domain_set(cert);
+    wanted.iter().all(|domain| have.contains(domain))
+}
+
+/// 选择证书动作：
+/// 1. 一张未过期证书已经覆盖全部域名时直接复用，优先站点同名 lineage；
+/// 2. 否则扩展站点同名 lineage，再否则扩展交集最大的已有证书；
+/// 3. 都没有时才新签一张以站点名命名的证书。
+pub fn plan_certificate(
+    certs: &[Certificate],
+    site_name: &str,
+    domains: &[String],
+) -> CertIssuePlan {
+    let wanted = wanted_domains(domains);
+    if wanted.is_empty() {
+        return CertIssuePlan::Issue {
+            cert_name: site_name.to_string(),
+        };
+    }
+    let mut covering: Vec<&Certificate> = certs
+        .iter()
+        .filter(|cert| cert_is_usable(cert) && cert_covers(cert, &wanted))
+        .collect();
+    if !covering.is_empty() {
+        covering.sort_by_key(|cert| {
+            let extra = cert_domain_set(cert).len().saturating_sub(wanted.len());
+            (
+                cert.name != site_name,
+                extra != 0,
+                extra,
+                std::cmp::Reverse(cert.days_left.unwrap_or(0)),
+                cert.name.clone(),
+            )
+        });
+        return CertIssuePlan::Reuse {
+            cert_name: covering[0].name.clone(),
+        };
+    }
+
+    if let Some(cert) = certs.iter().find(|cert| cert.name == site_name) {
+        return CertIssuePlan::Expand {
+            cert_name: cert.name.clone(),
+        };
+    }
+
+    let mut partial: Vec<&Certificate> = certs
+        .iter()
+        .filter(|cert| {
+            let have = cert_domain_set(cert);
+            wanted.iter().any(|domain| have.contains(domain))
+        })
+        .collect();
+    partial.sort_by_key(|cert| {
+        let have = cert_domain_set(cert);
+        let overlap = wanted
+            .iter()
+            .filter(|domain| have.contains(*domain))
+            .count();
+        let primary = wanted
+            .first()
+            .is_some_and(|domain| cert.name.eq_ignore_ascii_case(domain));
+        (
+            std::cmp::Reverse(overlap),
+            !primary,
+            std::cmp::Reverse(cert.days_left.unwrap_or(0)),
+            cert.name.clone(),
+        )
+    });
+    if let Some(cert) = partial.first() {
+        return CertIssuePlan::Expand {
+            cert_name: cert.name.clone(),
+        };
+    }
+
+    CertIssuePlan::Issue {
+        cert_name: site_name.to_string(),
+    }
+}
+
+fn cert_issue_spec(
+    certbot_email: &str,
+    allow_unsafe_without_email: bool,
+    plan: &CertIssuePlan,
+    domains: &[String],
+    certs: &[Certificate],
+) -> CommandSpec {
+    let mut spec = crate::infra::certbot::apply_registration_args(
+        CommandSpec::new("certbot")
+            .arg("certonly")
+            .arg("--nginx")
+            .arg("--cert-name")
+            .arg(plan.cert_name()),
+        certbot_email,
+        allow_unsafe_without_email,
+    )
+    .timeout(Duration::from_secs(180));
+    let mut issue_domains = domains.to_vec();
+    if let CertIssuePlan::Expand { cert_name } = plan {
+        spec = spec.arg("--expand");
+        // 扩展共享 lineage 时保留原有 SAN，不能只传入当前站点的域名。
+        if let Some(cert) = certs.iter().find(|cert| cert.name == *cert_name) {
+            issue_domains.extend(cert.domains.iter().cloned());
+        }
+    }
+    for domain in wanted_domains(&issue_domains) {
+        spec = spec.arg("-d").arg(domain);
+    }
+    spec
+}
+
+async fn bind_certificate(
+    ctx: Arc<AppContext>,
+    site_name: &str,
+    cert_name: &str,
+) -> Result<(), NgToolError> {
+    crate::domain::site::apply_cert_to_site_config(ctx, site_name, cert_name).await
+}
+
+/// 为站点准备证书并写回 SSL 配置。
+///
+/// 已有证书能覆盖全部 `server_name` 时不再签发；域名被拆成多张单域名证书时，
+/// 扩展交集最大的那一张，而不是再挂一次失败的新签发。只有拿到可用证书后才写 Nginx。
 pub async fn request_cert(
     ctx: Arc<AppContext>,
     site_name: &str,
@@ -400,30 +583,62 @@ pub async fn request_cert(
         });
     }
     crate::domain::site::validate_managed_site_for_ssl(&ctx, site_name)?;
-    let mut spec = crate::infra::certbot::apply_registration_args(
-        CommandSpec::new("certbot")
-            .arg("certonly")
-            .arg("--nginx")
-            .arg("--cert-name")
-            .arg(site_name),
+
+    let existing = list_certificates(ctx.clone()).await?;
+    let plan = plan_certificate(&existing, site_name, domains);
+    if let CertIssuePlan::Reuse { cert_name } = &plan {
+        bind_certificate(ctx.clone(), site_name, cert_name).await?;
+        ctx.audit.log(
+            "cert.request",
+            site_name,
+            AuditResult::Success,
+            started.elapsed().as_millis() as u64,
+            json!({"domains": domains, "reused": true, "cert_name": cert_name}),
+        );
+        return Ok(format!("已复用证书 {cert_name}，并写入站点 SSL 配置"));
+    }
+
+    let spec = cert_issue_spec(
         &certbot.email,
         certbot.allow_unsafe_without_email,
-    )
-    .timeout(Duration::from_secs(180));
-    for d in domains {
-        spec = spec.arg("-d").arg(d);
-    }
+        &plan,
+        domains,
+        &existing,
+    );
+    let issued_name = plan.cert_name().to_string();
 
     match ctx.executor.run(spec).await {
         Ok(out) => {
             let combined = out.combined();
             if !out.ok() {
+                if let Ok(certs) = list_certificates(ctx.clone()).await {
+                    if let CertIssuePlan::Reuse { cert_name } =
+                        plan_certificate(&certs, site_name, domains)
+                    {
+                        bind_certificate(ctx.clone(), site_name, &cert_name).await?;
+                        ctx.audit.log(
+                            "cert.request",
+                            site_name,
+                            AuditResult::Success,
+                            started.elapsed().as_millis() as u64,
+                            json!({
+                                "domains": domains,
+                                "reused": true,
+                                "recovered": true,
+                                "cert_name": cert_name,
+                            }),
+                        );
+                        return Ok(format!(
+                            "签发未完成，已改用现有证书 {cert_name} 写入站点 SSL 配置"
+                        ));
+                    }
+                }
                 ctx.audit.log(
                     "cert.request",
                     site_name,
                     AuditResult::Failure,
                     started.elapsed().as_millis() as u64,
-                    json!({"domains": domains, "exit": out.code()}),
+                    json!({"domains": domains, "exit": out.code(), "cert_name": issued_name}),
                 );
                 return Err(NgToolError::CommandFailed {
                     command: "certbot certonly --nginx".into(),
@@ -431,14 +646,13 @@ pub async fn request_cert(
                     stderr: combined,
                 });
             }
-            crate::domain::site::apply_cert_to_site_config(ctx.clone(), site_name, site_name)
-                .await?;
+            bind_certificate(ctx.clone(), site_name, &issued_name).await?;
             ctx.audit.log(
                 "cert.request",
                 site_name,
                 AuditResult::Success,
                 started.elapsed().as_millis() as u64,
-                json!({"domains": domains}),
+                json!({"domains": domains, "cert_name": issued_name}),
             );
             Ok(combined)
         }
@@ -803,6 +1017,52 @@ Found the following certs:
     }
 
     #[test]
+    fn expired_certbot_output_is_not_reused() {
+        let text = r#"
+  Certificate Name: blog
+    Domains: yiym.site www.yiym.site
+    Expiry Date: 2024-01-01 00:00:00+00:00 (INVALID: EXPIRED)
+    Certificate Path: /etc/letsencrypt/live/blog/fullchain.pem
+"#;
+        let certs = parse_certificates(text);
+        assert_eq!(certs.len(), 1);
+        assert!(certs[0].expiry.is_some());
+        assert_eq!(certs[0].level, Some(CertLevel::Expired));
+        assert!(!cert_is_usable(&certs[0]));
+        assert!(matches!(
+            plan_certificate(&certs, "blog", &["yiym.site".into()]),
+            CertIssuePlan::Expand { .. }
+        ));
+    }
+
+    #[test]
+    fn certificate_with_unknown_validity_is_not_reused() {
+        let text = r#"
+  Certificate Name: blog
+    Domains: yiym.site
+    Expiry Date: 2099-01-01 00:00:00+00:00 (UNKNOWN)
+    Certificate Path: /etc/letsencrypt/live/blog/fullchain.pem
+"#;
+        let certs = parse_certificates(text);
+        assert_eq!(certs.len(), 1);
+        assert_eq!(certs[0].days_left, None);
+        assert!(!cert_is_usable(&certs[0]));
+        assert!(matches!(
+            plan_certificate(&certs, "blog", &["yiym.site".into()]),
+            CertIssuePlan::Expand { .. }
+        ));
+    }
+
+    #[test]
+    fn certificate_with_zero_days_must_still_be_unexpired() {
+        let mut cert = sample_cert("blog", &["yiym.site"], 0);
+        cert.expiry = Some(Utc::now() - chrono::Duration::minutes(1));
+        assert!(!cert_is_usable(&cert));
+        cert.expiry = Some(Utc::now() + chrono::Duration::hours(1));
+        assert!(cert_is_usable(&cert));
+    }
+
+    #[test]
     fn parse_handles_garbage_input() {
         let certs = parse_certificates("");
         assert!(certs.is_empty());
@@ -819,6 +1079,178 @@ Found the following certs:
         assert_eq!(CertLevel::from_days(6), CertLevel::Critical);
         assert_eq!(CertLevel::from_days(0), CertLevel::Critical);
         assert_eq!(CertLevel::from_days(-1), CertLevel::Expired);
+    }
+
+    fn sample_cert(name: &str, domains: &[&str], days_left: i64) -> Certificate {
+        Certificate {
+            name: name.into(),
+            domains: domains.iter().map(|domain| (*domain).to_string()).collect(),
+            expiry: None,
+            days_left: Some(days_left),
+            level: Some(CertLevel::from_days(days_left)),
+            cert_path: Some(format!("/etc/letsencrypt/live/{name}/fullchain.pem")),
+        }
+    }
+
+    #[test]
+    fn plan_reuses_certificate_that_already_covers_every_domain() {
+        let certs = vec![
+            sample_cert("yiym.site", &["yiym.site"], 60),
+            sample_cert("bundle", &["yiym.site", "www.yiym.site"], 40),
+        ];
+        let plan = plan_certificate(
+            &certs,
+            "blog",
+            &["yiym.site".into(), "www.yiym.site".into()],
+        );
+        assert_eq!(
+            plan,
+            CertIssuePlan::Reuse {
+                cert_name: "bundle".into()
+            }
+        );
+    }
+
+    #[test]
+    fn plan_prefers_site_named_lineage_when_several_certs_cover() {
+        let certs = vec![
+            sample_cert("bundle", &["yiym.site", "www.yiym.site"], 80),
+            sample_cert("blog", &["yiym.site", "www.yiym.site"], 20),
+        ];
+        let plan = plan_certificate(
+            &certs,
+            "blog",
+            &["yiym.site".into(), "www.yiym.site".into()],
+        );
+        assert_eq!(
+            plan,
+            CertIssuePlan::Reuse {
+                cert_name: "blog".into()
+            }
+        );
+    }
+
+    #[test]
+    fn plan_expands_primary_domain_when_names_are_split() {
+        let certs = vec![
+            sample_cert("www.yiym.site", &["www.yiym.site"], 70),
+            sample_cert("yiym.site", &["yiym.site"], 60),
+        ];
+        let plan = plan_certificate(
+            &certs,
+            "blog",
+            &["yiym.site".into(), "www.yiym.site".into()],
+        );
+        assert_eq!(
+            plan,
+            CertIssuePlan::Expand {
+                cert_name: "yiym.site".into()
+            }
+        );
+    }
+
+    #[test]
+    fn plan_expands_site_lineage_before_a_partial_domain_cert() {
+        let certs = vec![
+            sample_cert("yiym.site", &["yiym.site"], 60),
+            sample_cert("blog", &["yiym.site"], 10),
+        ];
+        let plan = plan_certificate(
+            &certs,
+            "blog",
+            &["yiym.site".into(), "www.yiym.site".into()],
+        );
+        assert_eq!(
+            plan,
+            CertIssuePlan::Expand {
+                cert_name: "blog".into()
+            }
+        );
+    }
+
+    #[test]
+    fn plan_does_not_reuse_an_expired_covering_certificate() {
+        let certs = vec![sample_cert("blog", &["yiym.site", "www.yiym.site"], -1)];
+        let plan = plan_certificate(
+            &certs,
+            "blog",
+            &["yiym.site".into(), "www.yiym.site".into()],
+        );
+        assert_eq!(
+            plan,
+            CertIssuePlan::Expand {
+                cert_name: "blog".into()
+            }
+        );
+    }
+
+    #[test]
+    fn plan_issues_a_new_site_certificate_when_nothing_matches() {
+        let plan = plan_certificate(&[], "blog", &["yiym.site".into()]);
+        assert_eq!(
+            plan,
+            CertIssuePlan::Issue {
+                cert_name: "blog".into()
+            }
+        );
+    }
+
+    fn issue_command_domains(spec: &CommandSpec) -> Vec<&str> {
+        spec.args
+            .windows(2)
+            .filter(|args| args[0] == "-d")
+            .map(|args| args[1].as_str())
+            .collect()
+    }
+
+    #[test]
+    fn expansion_command_preserves_existing_domains_and_deduplicates() {
+        let certs = vec![
+            sample_cert("bundle", &["a.example", "B.example."], 60),
+            sample_cert("unrelated", &["other.example"], 60),
+        ];
+        let domains = vec!["A.example.".into(), "c.example".into(), "C.example.".into()];
+        let plan = plan_certificate(&certs, "new-site", &domains);
+        assert_eq!(
+            plan,
+            CertIssuePlan::Expand {
+                cert_name: "bundle".into()
+            }
+        );
+        let spec = cert_issue_spec("ops@example.com", false, &plan, &domains, &certs);
+        assert!(spec.args.iter().any(|arg| arg == "--expand"));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|args| { args[0] == "--cert-name" && args[1] == "bundle" }));
+        assert_eq!(
+            issue_command_domains(&spec),
+            vec!["a.example", "c.example", "b.example"]
+        );
+    }
+
+    #[test]
+    fn expansion_command_preserves_site_lineage_domains_without_overlap() {
+        let certs = vec![sample_cert("blog", &["a.example", "b.example"], 60)];
+        let domains = vec!["c.example".into()];
+        let plan = plan_certificate(&certs, "blog", &domains);
+        assert!(matches!(plan, CertIssuePlan::Expand { .. }));
+        let spec = cert_issue_spec("ops@example.com", false, &plan, &domains, &certs);
+        assert_eq!(
+            issue_command_domains(&spec),
+            vec!["c.example", "a.example", "b.example"]
+        );
+    }
+
+    #[test]
+    fn new_issue_command_does_not_include_unrelated_certificate_domains() {
+        let certs = vec![sample_cert("unrelated", &["other.example"], 60)];
+        let domains = vec!["a.example".into()];
+        let plan = plan_certificate(&certs, "blog", &domains);
+        assert!(matches!(plan, CertIssuePlan::Issue { .. }));
+        let spec = cert_issue_spec("ops@example.com", false, &plan, &domains, &certs);
+        assert!(!spec.args.iter().any(|arg| arg == "--expand"));
+        assert_eq!(issue_command_domains(&spec), vec!["a.example"]);
     }
 
     #[test]

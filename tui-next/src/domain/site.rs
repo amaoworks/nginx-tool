@@ -746,101 +746,21 @@ pub async fn create_site(
         }
         cert_requested = true;
         let cert_domains = cert_domains_for_input(&input);
-        let mut cert_cmd = crate::infra::certbot::apply_registration_args(
-            CommandSpec::new("certbot")
-                .arg("certonly")
-                .arg("--nginx")
-                .arg("--cert-name")
-                .arg(&input.name),
-            &certbot.email,
-            certbot.allow_unsafe_without_email,
-        );
-        for domain in &cert_domains {
-            cert_cmd = cert_cmd.arg("-d").arg(domain);
-        }
-        let cert_result = ctx
-            .executor
-            .run(cert_cmd.timeout(Duration::from_secs(120)))
-            .await;
-
-        match cert_result {
-            Ok(out) if out.ok() => {
-                let (cert_path, key_path) = cert_paths_for_name(&input.name);
-                let ssl_content =
-                    match render_create_site_config(&input, Some((&cert_path, &key_path))) {
-                        Ok(content) => content,
-                        Err(e) => {
-                            return Ok(CreateSiteOutcome::CertFailed {
-                                error: format!("证书已签发，但渲染 SSL 配置失败：{}", e),
-                            });
-                        }
-                    };
-                if let Err(e) =
-                    replace_site_config_checked(&ctx, &input.name, ssl_content.as_bytes()).await
-                {
-                    log_audit(
-                        &ctx,
-                        "site.ssl.apply",
-                        &input.name,
-                        AuditResult::Failure,
-                        started,
-                        json!({"cert_name": input.name, "error": e.to_string()}),
-                    );
-                    return Ok(CreateSiteOutcome::CertFailed {
-                        error: format!("证书已签发，但写入 SSL 配置失败：{}", e),
-                    });
-                }
-                log_audit(
-                    &ctx,
-                    "cert.request",
-                    &input.name,
-                    AuditResult::Success,
-                    started,
-                    json!({"domains": cert_domains}),
-                );
-            }
-            Ok(out) => {
-                let combined = out.combined();
-                log_audit(
-                    &ctx,
-                    "cert.request",
-                    &input.name,
-                    AuditResult::Failure,
-                    started,
-                    json!({"domains": cert_domains, "exit": out.code()}),
-                );
-                log_audit(
-                    &ctx,
-                    "site.create",
-                    &input.name,
-                    AuditResult::Success,
-                    started,
-                    json!({"cert": "failed"}),
-                );
-                return Ok(CreateSiteOutcome::CertFailed { error: combined });
-            }
-            Err(e) => {
-                // 证书失败不回滚站点
-                log_audit(
-                    &ctx,
-                    "cert.request",
-                    &input.name,
-                    AuditResult::Failure,
-                    started,
-                    json!({"domains": cert_domains, "error": e.to_string()}),
-                );
-                log_audit(
-                    &ctx,
-                    "site.create",
-                    &input.name,
-                    AuditResult::Success,
-                    started,
-                    json!({"cert": "failed"}),
-                );
-                return Ok(CreateSiteOutcome::CertFailed {
-                    error: e.to_string(),
-                });
-            }
+        // 与证书页共用一条路径：能复用就写回，否则扩展或新签，成功后才改 Nginx。
+        if let Err(e) =
+            crate::domain::cert::request_cert(ctx.clone(), &input.name, &cert_domains).await
+        {
+            log_audit(
+                &ctx,
+                "site.create",
+                &input.name,
+                AuditResult::Success,
+                started,
+                json!({"cert": "failed"}),
+            );
+            return Ok(CreateSiteOutcome::CertFailed {
+                error: e.to_string(),
+            });
         }
     }
 

@@ -112,7 +112,8 @@ impl AppState {
                         format!("站点: {}", site.name),
                         format!("域名: {}", site.all_domains.join(", ")),
                         "".into(),
-                        "将使用 certbot certonly 签发证书，并由 ngtool 写入 SSL 配置。".into(),
+                        "已有证书能覆盖这些域名时直接写入；否则签发或扩展后再写入 SSL 配置。"
+                            .into(),
                     ],
                     "确认申请",
                     crate::ui::modal::ModalAction::RequestCertForSite {
