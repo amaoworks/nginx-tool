@@ -3,11 +3,12 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::state::{AppState, EditFocus};
 use crate::ui::theme;
+use crate::ui::views::site_tuning::{self, FocusedLines};
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let edit = &state.site_edit;
@@ -19,6 +20,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
+    let mut focused_lines = FocusedLines { start: 0, end: 1 };
     lines.push(Line::from(Span::styled(
         "切换：F5 高级（注入槽）  F6 原始配置",
         Style::default().fg(theme::FG_DIM),
@@ -30,24 +32,25 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     )));
     lines.push(Line::from(""));
 
-    lines.push(field_label("域名:", edit.focused == EditFocus::Domain));
-    lines.push(input_field(
-        &edit.domain,
-        edit.focused == EditFocus::Domain,
-        "example.com",
-    ));
+    let domain_focused = edit.focused == EditFocus::Domain;
+    if domain_focused {
+        focused_lines = field_focus(lines.len());
+    }
+    lines.push(field_label("域名:", domain_focused));
+    lines.push(input_field(&edit.domain, domain_focused, "example.com"));
     if let Some(err) = edit.field_errors.get("domain") {
         lines.push(error_line(err));
     }
     lines.push(Line::from(""));
 
-    lines.push(field_label(
-        "附加域名:",
-        edit.focused == EditFocus::DomainAliases,
-    ));
+    let aliases_focused = edit.focused == EditFocus::DomainAliases;
+    if aliases_focused {
+        focused_lines = field_focus(lines.len());
+    }
+    lines.push(field_label("附加域名:", aliases_focused));
     lines.push(input_field(
         &edit.domain_aliases,
-        edit.focused == EditFocus::DomainAliases,
+        aliases_focused,
         "www.example.com, m.example.com（可选）",
     ));
     if let Some(err) = edit.field_errors.get("domain_aliases") {
@@ -56,22 +59,23 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     lines.push(Line::from(""));
 
     if edit.site_type != crate::domain::site::SiteType::Static {
-        lines.push(field_label("目标:", edit.focused == EditFocus::Target));
-        lines.push(input_field(
-            &edit.target,
-            edit.focused == EditFocus::Target,
-            "127.0.0.1:8080",
-        ));
+        let target_focused = edit.focused == EditFocus::Target;
+        if target_focused {
+            focused_lines = field_focus(lines.len());
+        }
+        lines.push(field_label("目标:", target_focused));
+        lines.push(input_field(&edit.target, target_focused, "127.0.0.1:8080"));
         if let Some(err) = edit.field_errors.get("target") {
             lines.push(error_line(err));
         }
         lines.push(Line::from(""));
 
-        lines.push(field_label("协议:", edit.focused == EditFocus::Scheme));
-        lines.push(scheme_line(
-            &edit.upstream_scheme,
-            edit.focused == EditFocus::Scheme,
-        ));
+        let scheme_focused = edit.focused == EditFocus::Scheme;
+        if scheme_focused {
+            focused_lines = field_focus(lines.len());
+        }
+        lines.push(field_label("协议:", scheme_focused));
+        lines.push(scheme_line(&edit.upstream_scheme, scheme_focused));
         lines.push(Line::from(""));
     }
 
@@ -81,33 +85,35 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     )));
     match edit.site_type {
         crate::domain::site::SiteType::Proxy => {
+            if edit.focused == EditFocus::ProxyFeatureStreaming {
+                focused_lines = one_line_focus(lines.len());
+            }
             lines.push(toggle_line(
                 "流式响应 / AI API",
                 edit.feature_streaming,
                 edit.focused == EditFocus::ProxyFeatureStreaming,
             ));
+            if edit.focused == EditFocus::ProxyFeatureWebsocket {
+                focused_lines = one_line_focus(lines.len());
+            }
             lines.push(toggle_line(
                 "WebSocket",
                 edit.feature_websocket,
                 edit.focused == EditFocus::ProxyFeatureWebsocket,
             ));
-            lines.push(toggle_line(
-                "大请求体 / 上传",
-                edit.feature_large_body,
-                edit.focused == EditFocus::ProxyFeatureLargeBody,
-            ));
+            if edit.focused == EditFocus::ProxyFeatureCors {
+                focused_lines = one_line_focus(lines.len());
+            }
             lines.push(toggle_line(
                 "浏览器跨域 CORS",
                 edit.feature_cors,
                 edit.focused == EditFocus::ProxyFeatureCors,
             ));
-            lines.push(toggle_line(
-                "长超时后端",
-                edit.feature_long_timeout,
-                edit.focused == EditFocus::ProxyFeatureLongTimeout,
-            ));
         }
         crate::domain::site::SiteType::Static => {
+            if edit.focused == EditFocus::StaticMode {
+                focused_lines = field_focus(lines.len());
+            }
             lines.push(field_label(
                 "站点模式:",
                 edit.focused == EditFocus::StaticMode,
@@ -116,11 +122,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
                 edit.feature_spa_mode,
                 edit.focused == EditFocus::StaticMode,
             ));
+            if edit.focused == EditFocus::StaticFeatureCache {
+                focused_lines = one_line_focus(lines.len());
+            }
             lines.push(toggle_line(
                 "静态资源缓存",
                 edit.feature_static_cache,
                 edit.focused == EditFocus::StaticFeatureCache,
             ));
+            if edit.focused == EditFocus::StaticFeatureBlockSensitive {
+                focused_lines = one_line_focus(lines.len());
+            }
             lines.push(toggle_line(
                 "敏感路径保护",
                 edit.feature_block_sensitive,
@@ -142,6 +154,25 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 
     lines.push(Line::from(""));
+    let tuning_focus = match edit.focused {
+        EditFocus::Tuning(field) => Some(field),
+        _ => None,
+    };
+    if let Some(range) = site_tuning::append_tuning_fields(
+        &mut lines,
+        &edit.tuning,
+        matches!(
+            edit.site_type,
+            crate::domain::site::SiteType::Proxy | crate::domain::site::SiteType::Emby
+        ),
+        state.ctx.nginx.http2_support(),
+        edit.ssl_enabled,
+        tuning_focus,
+        &edit.field_errors,
+    ) {
+        focused_lines = range;
+    }
+
     lines.push(Line::from(Span::styled(
         "高级模式用于维护注入槽和模板片段；更深的定制仍建议直接编辑配置。",
         Style::default().fg(theme::FG_DIM),
@@ -155,8 +186,24 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         )));
     }
 
-    let p = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let scroll_offset =
+        site_tuning::scroll_offset(&lines, inner.width, inner.height, focused_lines);
+    let p = Paragraph::new(site_tuning::wrap_lines(&lines, inner.width)).scroll((scroll_offset, 0));
     frame.render_widget(p, inner);
+}
+
+fn one_line_focus(line: usize) -> FocusedLines {
+    FocusedLines {
+        start: line,
+        end: line + 1,
+    }
+}
+
+fn field_focus(line: usize) -> FocusedLines {
+    FocusedLines {
+        start: line,
+        end: line + 2,
+    }
 }
 
 fn field_label(label: &str, focused: bool) -> Line<'static> {

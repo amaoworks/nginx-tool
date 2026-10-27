@@ -1,6 +1,7 @@
 //! 站点编辑（托管 / 高级 / 原始 / 槽位）状态。
 
 use crate::app::state::site_form::split_aliases;
+use crate::template::site_tuning::{SiteTuning, TuningField};
 
 /// 编辑器表单模式焦点区域
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -10,11 +11,10 @@ pub enum EditFocus {
     DomainAliases,
     Target,
     Scheme,
+    Tuning(TuningField),
     ProxyFeatureStreaming,
     ProxyFeatureWebsocket,
-    ProxyFeatureLargeBody,
     ProxyFeatureCors,
-    ProxyFeatureLongTimeout,
     StaticMode,
     StaticFeatureCache,
     StaticFeatureBlockSensitive,
@@ -23,6 +23,7 @@ pub enum EditFocus {
 /// 站点编辑器状态
 #[derive(Debug)]
 pub struct SiteEditState {
+    pub tuning: SiteTuning,
     /// 正在编辑的站点名称
     pub site_name: String,
     /// 焦点区域
@@ -43,12 +44,8 @@ pub struct SiteEditState {
     pub feature_streaming: bool,
     /// 反向代理：WebSocket
     pub feature_websocket: bool,
-    /// 反向代理：大请求体 / 上传
-    pub feature_large_body: bool,
     /// 反向代理：CORS
     pub feature_cors: bool,
-    /// 反向代理：长超时
-    pub feature_long_timeout: bool,
     /// 静态站点：SPA 模式
     pub feature_spa_mode: bool,
     /// 静态站点：静态缓存
@@ -119,6 +116,7 @@ pub struct RawSnapshot {
 /// 表单模式重置（Ctrl+D）所用的快照：仅含会被表单修改的字段。
 #[derive(Debug, Clone)]
 pub struct EditSnapshot {
+    pub tuning: SiteTuning,
     pub domain: String,
     pub domain_aliases: String,
     pub target: String,
@@ -126,9 +124,7 @@ pub struct EditSnapshot {
     pub static_root: String,
     pub feature_streaming: bool,
     pub feature_websocket: bool,
-    pub feature_large_body: bool,
     pub feature_cors: bool,
-    pub feature_long_timeout: bool,
     pub feature_spa_mode: bool,
     pub feature_static_cache: bool,
     pub feature_block_sensitive: bool,
@@ -139,6 +135,7 @@ pub struct EditSnapshot {
 impl Default for SiteEditState {
     fn default() -> Self {
         Self {
+            tuning: SiteTuning::default(),
             site_name: String::new(),
             focused: EditFocus::default(),
             domain: String::new(),
@@ -149,9 +146,7 @@ impl Default for SiteEditState {
             static_root: String::new(),
             feature_streaming: false,
             feature_websocket: false,
-            feature_large_body: false,
             feature_cors: false,
-            feature_long_timeout: false,
             feature_spa_mode: false,
             feature_static_cache: true,
             feature_block_sensitive: false,
@@ -194,6 +189,7 @@ impl SiteEditState {
         let feature_enabled = |name: &str| parsed.managed_features.iter().any(|item| item == name);
         let site_type = parsed.managed_type.unwrap_or(parsed.site_type);
         Self {
+            tuning: parsed.tuning.clone(),
             site_name: site_name.to_string(),
             domain: parsed.domains.first().cloned().unwrap_or_default(),
             domain_aliases: parsed
@@ -215,14 +211,8 @@ impl SiteEditState {
             feature_websocket: (site_type == crate::domain::site::SiteType::Proxy
                 && feature_enabled("websocket"))
                 || site_type == crate::domain::site::SiteType::Emby,
-            feature_large_body: (site_type == crate::domain::site::SiteType::Proxy
-                && feature_enabled("large_body"))
-                || site_type == crate::domain::site::SiteType::Emby,
             feature_cors: site_type == crate::domain::site::SiteType::Proxy
                 && feature_enabled("cors"),
-            feature_long_timeout: (site_type == crate::domain::site::SiteType::Proxy
-                && feature_enabled("long_timeout"))
-                || site_type == crate::domain::site::SiteType::Emby,
             feature_spa_mode: site_type == crate::domain::site::SiteType::Static
                 && feature_enabled("spa_mode"),
             feature_static_cache: if site_type == crate::domain::site::SiteType::Static {
@@ -280,6 +270,12 @@ impl SiteEditState {
         {
             self.set_error("static_root", "静态目录不能为空".into());
         }
+        for (field, error) in self
+            .tuning
+            .errors(self.site_type != crate::domain::site::SiteType::Static)
+        {
+            self.set_error(field, error);
+        }
         !self.has_errors()
     }
 
@@ -301,6 +297,8 @@ impl SiteEditState {
             };
 
         crate::template::renderer::RenderParams {
+            tuning: self.tuning.clone(),
+            http2_support: Default::default(),
             site_name: self.site_name.clone(),
             domain_name: self.domain.trim().to_string(),
             domain_aliases: split_aliases(&self.domain_aliases).join(" "),
@@ -313,16 +311,10 @@ impl SiteEditState {
                 self.site_type,
                 crate::domain::site::SiteType::Proxy | crate::domain::site::SiteType::Emby
             ) && self.feature_websocket,
-            feature_large_body: matches!(
-                self.site_type,
-                crate::domain::site::SiteType::Proxy | crate::domain::site::SiteType::Emby
-            ) && self.feature_large_body,
+            feature_large_body: false,
             feature_cors: self.site_type == crate::domain::site::SiteType::Proxy
                 && self.feature_cors,
-            feature_long_timeout: matches!(
-                self.site_type,
-                crate::domain::site::SiteType::Proxy | crate::domain::site::SiteType::Emby
-            ) && self.feature_long_timeout,
+            feature_long_timeout: false,
             feature_spa_mode: self.site_type == crate::domain::site::SiteType::Static
                 && self.feature_spa_mode,
             feature_static_cache: self.site_type == crate::domain::site::SiteType::Static
@@ -380,9 +372,13 @@ impl SiteEditState {
             EditFocus::Scheme,
             EditFocus::ProxyFeatureStreaming,
             EditFocus::ProxyFeatureWebsocket,
-            EditFocus::ProxyFeatureLargeBody,
             EditFocus::ProxyFeatureCors,
-            EditFocus::ProxyFeatureLongTimeout,
+            EditFocus::Tuning(TuningField::Http2),
+            EditFocus::Tuning(TuningField::Gzip),
+            EditFocus::Tuning(TuningField::BodySize),
+            EditFocus::Tuning(TuningField::ConnectTimeout),
+            EditFocus::Tuning(TuningField::SendTimeout),
+            EditFocus::Tuning(TuningField::ReadTimeout),
         ];
         const STATIC_ORDER: &[EditFocus] = &[
             EditFocus::Domain,
@@ -390,12 +386,20 @@ impl SiteEditState {
             EditFocus::StaticMode,
             EditFocus::StaticFeatureCache,
             EditFocus::StaticFeatureBlockSensitive,
+            EditFocus::Tuning(TuningField::Http2),
+            EditFocus::Tuning(TuningField::Gzip),
         ];
         const EMBY_ORDER: &[EditFocus] = &[
             EditFocus::Domain,
             EditFocus::DomainAliases,
             EditFocus::Target,
             EditFocus::Scheme,
+            EditFocus::Tuning(TuningField::Http2),
+            EditFocus::Tuning(TuningField::Gzip),
+            EditFocus::Tuning(TuningField::BodySize),
+            EditFocus::Tuning(TuningField::ConnectTimeout),
+            EditFocus::Tuning(TuningField::SendTimeout),
+            EditFocus::Tuning(TuningField::ReadTimeout),
         ];
 
         match self.site_type {
@@ -437,6 +441,7 @@ impl SiteEditState {
     /// 进入编辑时密封当前表单字段，供 Ctrl+D 重置使用。
     pub fn seal_original(&mut self) {
         self.original_snapshot = Some(Box::new(EditSnapshot {
+            tuning: self.tuning.clone(),
             domain: self.domain.clone(),
             domain_aliases: self.domain_aliases.clone(),
             target: self.target.clone(),
@@ -444,9 +449,7 @@ impl SiteEditState {
             static_root: self.static_root.clone(),
             feature_streaming: self.feature_streaming,
             feature_websocket: self.feature_websocket,
-            feature_large_body: self.feature_large_body,
             feature_cors: self.feature_cors,
-            feature_long_timeout: self.feature_long_timeout,
             feature_spa_mode: self.feature_spa_mode,
             feature_static_cache: self.feature_static_cache,
             feature_block_sensitive: self.feature_block_sensitive,
@@ -461,6 +464,7 @@ impl SiteEditState {
         let Some(snap) = self.original_snapshot.as_deref() else {
             return false;
         };
+        self.tuning = snap.tuning.clone();
         self.domain = snap.domain.clone();
         self.domain_aliases = snap.domain_aliases.clone();
         self.target = snap.target.clone();
@@ -468,9 +472,7 @@ impl SiteEditState {
         self.static_root = snap.static_root.clone();
         self.feature_streaming = snap.feature_streaming;
         self.feature_websocket = snap.feature_websocket;
-        self.feature_large_body = snap.feature_large_body;
         self.feature_cors = snap.feature_cors;
-        self.feature_long_timeout = snap.feature_long_timeout;
         self.feature_spa_mode = snap.feature_spa_mode;
         self.feature_static_cache = snap.feature_static_cache;
         self.feature_block_sensitive = snap.feature_block_sensitive;
@@ -487,6 +489,7 @@ impl SiteEditState {
         saved_content: &str,
         mtime_at_save: Option<std::time::SystemTime>,
     ) {
+        self.tuning = crate::template::site_tuning::parse_tuning(saved_content);
         self.raw_lines = saved_content.lines().map(String::from).collect();
         if saved_content.ends_with('\n') {
             self.raw_lines.push(String::new());
@@ -644,7 +647,6 @@ impl SiteEditState {
         Some(slot)
     }
 }
-
 
 /// 把字符索引转换为字节索引；支持 CJK / emoji 多字节字符。
 /// 若 char_idx 超过字符数则返回字符串末尾的字节长度。

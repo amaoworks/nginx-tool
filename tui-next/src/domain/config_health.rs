@@ -133,8 +133,7 @@ pub fn apply_all_fixes(path: &Path) -> Result<FixReport, String> {
         });
     }
 
-    let mut content =
-        std::fs::read_to_string(path).map_err(|e| format!("读取文件失败：{}", e))?;
+    let mut content = std::fs::read_to_string(path).map_err(|e| format!("读取文件失败：{}", e))?;
     let mut applied = Vec::new();
 
     for issue in &issues {

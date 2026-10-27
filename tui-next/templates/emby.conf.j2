@@ -1,9 +1,24 @@
 server {
+    # nginx-tools:tuning={{ tuning_json | safe }}
     server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
 
     # nginx-tools:tool-marker: type=emby
     access_log /var/log/nginx/{{ site_name }}.access.log;
     error_log /var/log/nginx/{{ site_name }}.error.log;
+
+{% if gzip_mode == "on" %}
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml image/svg+xml;
+    gzip_comp_level 6;
+{% elif gzip_mode == "off" %}
+    gzip off;
+{% endif %}
+
+{% if body_size %}
+    client_max_body_size {{ body_size }};
+{% endif %}
 
     # nginx-tools:custom-before-location:start
     {{ custom_before_location | safe }}
@@ -19,6 +34,15 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_buffering off;
+{% if connect_timeout %}
+        proxy_connect_timeout {{ connect_timeout }};
+{% endif %}
+{% if send_timeout %}
+        proxy_send_timeout {{ send_timeout }};
+{% endif %}
+{% if read_timeout %}
+        proxy_read_timeout {{ read_timeout }};
+{% endif %}
         # nginx-tools:custom-inside-location:start
         {{ custom_inside_location | safe }}
         # nginx-tools:custom-inside-location:end
@@ -29,7 +53,10 @@ server {
     # nginx-tools:custom-after-location:end
 {% if ssl_enabled == "true" %}
 
-    listen 443 ssl;
+    listen 443 ssl{{ http2_listen }};
+{% if http2_directive %}
+    {{ http2_directive }}
+{% endif %}
     ssl_certificate {{ ssl_cert_path }};
     ssl_certificate_key {{ ssl_key_path }};
     include /etc/letsencrypt/options-ssl-nginx.conf;

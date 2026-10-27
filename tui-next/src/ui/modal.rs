@@ -326,5 +326,8 @@ fn button_row(modal: &Modal) -> Paragraph<'_> {
 }
 
 fn render_button(label: &str, focused: bool) -> Span<'static> {
-    Span::styled(focus::button_label(label), focus::button_style_muted(focused))
+    Span::styled(
+        focus::button_label(label),
+        focus::button_style_muted(focused),
+    )
 }

@@ -268,8 +268,8 @@ fn render_site_summary(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn render_global_actions(frame: &mut Frame, area: Rect, state: &AppState) {
-    let focused_group = state.focus == FocusArea::Content
-        && state.certs.focused == CertsFocus::GlobalActions;
+    let focused_group =
+        state.focus == FocusArea::Content && state.certs.focused == CertsFocus::GlobalActions;
     let readonly = state.run_mode.is_readonly() || !state.ctx.deps().certbot;
 
     let title_style = if focused_group {
@@ -302,9 +302,7 @@ fn render_global_actions(frame: &mut Frame, area: Rect, state: &AppState) {
         let disabled = readonly
             && matches!(
                 action,
-                CertsAction::RenewAll
-                    | CertsAction::InstallDeployHook
-                    | CertsAction::DeleteOrphan
+                CertsAction::RenewAll | CertsAction::InstallDeployHook | CertsAction::DeleteOrphan
             );
         let hook_ok = matches!(action, CertsAction::InstallDeployHook)
             && state

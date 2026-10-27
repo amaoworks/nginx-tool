@@ -15,11 +15,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let site_name = &edit.site_name;
     let slot = edit.slot_edit_target.unwrap_or(edit.current_slot);
 
-    let title = format!(
-        " 📁 站点 ▸ {} ▸ 注入槽: {} ",
-        site_name,
-        slot.label()
-    );
+    let title = format!(" 📁 站点 ▸ {} ▸ 注入槽: {} ", site_name, slot.label());
     let block = Block::default()
         .borders(Borders::NONE)
         .title(Span::styled(title, Style::default().fg(theme::FG_PATH)));

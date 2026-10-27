@@ -94,9 +94,8 @@ impl AppState {
                     return;
                 }
                 let Some(site) = self.sites.list.get(self.certs.site_selector_index) else {
-                    self.notification = Some(Notification::failure(
-                        "请先选定一个有 server_name 的站点",
-                    ));
+                    self.notification =
+                        Some(Notification::failure("请先选定一个有 server_name 的站点"));
                     return;
                 };
                 if site.all_domains.is_empty() {

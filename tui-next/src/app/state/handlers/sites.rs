@@ -6,6 +6,7 @@ use crate::app::state::common::{FocusArea, Notification};
 use crate::app::state::site_edit::{char_to_byte, EditFocus, SiteEditState};
 use crate::app::state::site_form::FormField;
 use crate::domain::log::LogKind;
+use crate::template::site_tuning::{SiteTuning, TuningField};
 use crate::ui::modal::Modal;
 
 impl AppState {
@@ -26,14 +27,8 @@ impl AppState {
             EditFocus::ProxyFeatureWebsocket => {
                 self.site_edit.feature_websocket = !self.site_edit.feature_websocket;
             }
-            EditFocus::ProxyFeatureLargeBody => {
-                self.site_edit.feature_large_body = !self.site_edit.feature_large_body;
-            }
             EditFocus::ProxyFeatureCors => {
                 self.site_edit.feature_cors = !self.site_edit.feature_cors;
-            }
-            EditFocus::ProxyFeatureLongTimeout => {
-                self.site_edit.feature_long_timeout = !self.site_edit.feature_long_timeout;
             }
             EditFocus::StaticFeatureCache => {
                 self.site_edit.feature_static_cache = !self.site_edit.feature_static_cache;
@@ -48,6 +43,11 @@ impl AppState {
 
     pub(crate) fn adjust_site_edit_managed_focus(&mut self, forward: bool) {
         match self.site_edit.focused {
+            EditFocus::Tuning(field) => {
+                if self.site_edit.tuning.cycle(field, forward) {
+                    self.site_edit.dirty = true;
+                }
+            }
             EditFocus::Scheme => {
                 self.toggle_site_edit_scheme();
             }
@@ -57,9 +57,7 @@ impl AppState {
             }
             EditFocus::ProxyFeatureStreaming
             | EditFocus::ProxyFeatureWebsocket
-            | EditFocus::ProxyFeatureLargeBody
             | EditFocus::ProxyFeatureCors
-            | EditFocus::ProxyFeatureLongTimeout
             | EditFocus::StaticFeatureCache
             | EditFocus::StaticFeatureBlockSensitive => {
                 self.toggle_site_edit_current_flag();
@@ -172,7 +170,9 @@ impl AppState {
             self.site_form.move_focus(1);
             return;
         }
-        if k.modifiers.contains(KeyModifiers::SHIFT) && matches!(k.code, KeyCode::Tab) {
+        if (k.modifiers.contains(KeyModifiers::SHIFT) && matches!(k.code, KeyCode::Tab))
+            || matches!(k.code, KeyCode::BackTab)
+        {
             self.site_form.move_focus(-1);
             return;
         }
@@ -194,6 +194,13 @@ impl AppState {
                     return;
                 }
                 _ => {}
+            }
+        }
+
+        if let FormField::Tuning(field) = self.site_form.focused {
+            if handle_tuning_key(&mut self.site_form.tuning, field, k) {
+                self.site_form.field_errors.remove(field.key());
+                return;
             }
         }
 
@@ -235,14 +242,8 @@ impl AppState {
                 FormField::ProxyFeatureWebsocket => {
                     self.site_form.feature_websocket = !self.site_form.feature_websocket;
                 }
-                FormField::ProxyFeatureLargeBody => {
-                    self.site_form.feature_large_body = !self.site_form.feature_large_body;
-                }
                 FormField::ProxyFeatureCors => {
                     self.site_form.feature_cors = !self.site_form.feature_cors;
-                }
-                FormField::ProxyFeatureLongTimeout => {
-                    self.site_form.feature_long_timeout = !self.site_form.feature_long_timeout;
                 }
                 FormField::StaticMode => {
                     self.site_form.static_spa_mode = !self.site_form.static_spa_mode;
@@ -281,14 +282,8 @@ impl AppState {
                 (FormField::ProxyFeatureWebsocket, _) => {
                     self.site_form.feature_websocket = !self.site_form.feature_websocket;
                 }
-                (FormField::ProxyFeatureLargeBody, _) => {
-                    self.site_form.feature_large_body = !self.site_form.feature_large_body;
-                }
                 (FormField::ProxyFeatureCors, _) => {
                     self.site_form.feature_cors = !self.site_form.feature_cors;
-                }
-                (FormField::ProxyFeatureLongTimeout, _) => {
-                    self.site_form.feature_long_timeout = !self.site_form.feature_long_timeout;
                 }
                 (FormField::StaticMode, _) => {
                     self.site_form.static_spa_mode = !self.site_form.static_spa_mode;
@@ -366,6 +361,13 @@ impl AppState {
 
         // 验证字段
         if !self.site_form.validate() {
+            if let Some(field) = TuningField::ALL
+                .into_iter()
+                .find(|field| self.site_form.field_errors.contains_key(field.key()))
+            {
+                self.site_form.focused = FormField::Tuning(field);
+                return;
+            }
             // 有错误时聚焦第一个错误字段
             if let Some(first_err_field) = self.site_form.field_errors.keys().next() {
                 self.site_form.focused = match first_err_field.as_str() {
@@ -414,8 +416,7 @@ impl AppState {
         let content = match std::fs::read_to_string(config_path) {
             Ok(c) => c,
             Err(e) => {
-                self.notification =
-                    Some(Notification::failure(format!("无法读取配置文件：{}", e)));
+                self.notification = Some(Notification::failure(format!("无法读取配置文件：{}", e)));
                 return;
             }
         };
@@ -446,11 +447,7 @@ impl AppState {
     }
 
     /// 对站点配置执行健康修复后重新载入编辑器
-    pub(crate) fn apply_site_config_health_fix(
-        &mut self,
-        site_name: &str,
-        path: &std::path::Path,
-    ) {
+    pub(crate) fn apply_site_config_health_fix(&mut self, site_name: &str, path: &std::path::Path) {
         if self.run_mode.is_readonly() {
             self.notification = Some(Notification::failure(
                 "当前为只读模式，无法修改配置文件".to_string(),
@@ -500,7 +497,9 @@ impl AppState {
             self.site_edit.move_focus_forward();
             return;
         }
-        if k.modifiers.contains(KeyModifiers::SHIFT) && matches!(k.code, KeyCode::Tab) {
+        if (k.modifiers.contains(KeyModifiers::SHIFT) && matches!(k.code, KeyCode::Tab))
+            || matches!(k.code, KeyCode::BackTab)
+        {
             self.site_edit.move_focus_backward();
             return;
         }
@@ -555,6 +554,16 @@ impl AppState {
             }
         }
 
+        if let EditFocus::Tuning(field) = self.site_edit.focused {
+            if handle_tuning_key(&mut self.site_edit.tuning, field, k) {
+                self.site_edit.field_errors.remove(field.key());
+                self.site_edit.dirty = true;
+            } else if k.code == KeyCode::Enter {
+                self.site_edit.move_focus_forward();
+            }
+            return;
+        }
+
         // 文本输入
         if k.modifiers == KeyModifiers::NONE || k.modifiers.contains(KeyModifiers::SHIFT) {
             match self.site_edit.focused {
@@ -604,15 +613,14 @@ impl AppState {
                 }
                 EditFocus::ProxyFeatureStreaming
                 | EditFocus::ProxyFeatureWebsocket
-                | EditFocus::ProxyFeatureLargeBody
                 | EditFocus::ProxyFeatureCors
-                | EditFocus::ProxyFeatureLongTimeout
                 | EditFocus::StaticFeatureCache
                 | EditFocus::StaticFeatureBlockSensitive => {
                     if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ')) {
                         self.toggle_site_edit_current_flag();
                     }
                 }
+                EditFocus::Tuning(_) => {}
                 EditFocus::StaticMode => {
                     if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ')) {
                         self.site_edit.feature_spa_mode = !self.site_edit.feature_spa_mode;
@@ -1110,11 +1118,24 @@ impl AppState {
             return;
         }
 
+        if !self.site_edit.markers_intact {
+            self.notification = Some(Notification::failure(
+                "注入槽标记不完整，无法安全托管保存；请在原始模式修复标记后重新打开",
+            ));
+            return;
+        }
         if !self.site_edit.validate() {
+            if let Some(field) = TuningField::ALL
+                .into_iter()
+                .find(|field| self.site_edit.field_errors.contains_key(field.key()))
+            {
+                self.site_edit.focused = EditFocus::Tuning(field);
+            }
             return;
         }
 
-        let params = self.site_edit.build_render_params();
+        let mut params = self.site_edit.build_render_params();
+        params.http2_support = self.ctx.nginx.http2_support();
         let kind = self.site_edit.site_kind();
         let mut content = match crate::template::renderer::render(kind, &params) {
             Ok(c) => c,
@@ -1170,5 +1191,88 @@ impl AppState {
         } else {
             "正在保存配置".to_string()
         }));
+    }
+}
+
+/// Shared input behavior for numeric fields and selectors in both forms.
+fn handle_tuning_key(
+    tuning: &mut SiteTuning,
+    field: TuningField,
+    key: crossterm::event::KeyEvent,
+) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('u') {
+        if let Some(text) = tuning.text_mut(field) {
+            text.clear();
+            return true;
+        }
+    }
+    if key.modifiers != KeyModifiers::NONE && key.modifiers != KeyModifiers::SHIFT {
+        return false;
+    }
+    if matches!(
+        key.code,
+        KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') | KeyCode::Enter
+    ) && tuning.cycle(field, key.code != KeyCode::Left)
+    {
+        return true;
+    }
+    if let Some(text) = tuning.text_mut(field) {
+        match key.code {
+            KeyCode::Char(c) if c.is_ascii_alphanumeric() || matches!(c, '.' | '-') => {
+                if text.len() < 32 {
+                    text.push(c);
+                }
+                return true;
+            }
+            KeyCode::Backspace => {
+                text.pop();
+                return true;
+            }
+            KeyCode::Delete => {
+                text.clear();
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tuning_input_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn numeric_input_clear_and_selector_cycle() {
+        let mut tuning = SiteTuning::default();
+        for character in "500ms".chars() {
+            assert!(handle_tuning_key(
+                &mut tuning,
+                TuningField::ConnectTimeout,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)
+            ));
+        }
+        assert_eq!(tuning.connect_timeout, "500ms");
+        assert!(tuning.errors(true).is_empty());
+        assert!(handle_tuning_key(
+            &mut tuning,
+            TuningField::ConnectTimeout,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)
+        ));
+        assert!(tuning.connect_timeout.is_empty());
+        assert!(handle_tuning_key(
+            &mut tuning,
+            TuningField::Http2,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)
+        ));
+        assert_eq!(tuning.http2, crate::template::site_tuning::Http2Mode::On);
+        assert!(handle_tuning_key(
+            &mut tuning,
+            TuningField::Http2,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)
+        ));
+        assert_eq!(tuning.http2, crate::template::site_tuning::Http2Mode::Auto);
     }
 }

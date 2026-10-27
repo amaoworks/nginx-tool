@@ -832,4 +832,3 @@ impl AppState {
         self.backup.pending_restore.take()
     }
 }
-

@@ -128,6 +128,7 @@ async fn run(terminal: &mut Tui, ctx: Arc<AppContext>) -> anyhow::Result<()> {
         "ngtool tui main loop started"
     );
 
+    ctx.nginx.refresh_http2_support().await;
     let mut state = AppState::new(ctx.clone());
     let mut events = EventStream::new();
 

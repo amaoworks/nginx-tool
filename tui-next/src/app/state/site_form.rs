@@ -1,5 +1,7 @@
 //! 新建站点表单状态。
 
+use crate::template::site_tuning::{SiteTuning, TuningField};
+
 /// 站点类型选项
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SiteTypeChoice {
@@ -35,19 +37,18 @@ pub enum FormField {
     Target,
     ProxyFeatureStreaming,
     ProxyFeatureWebsocket,
-    ProxyFeatureLargeBody,
     ProxyFeatureCors,
-    ProxyFeatureLongTimeout,
     StaticMode,
     StaticFeatureCache,
     StaticFeatureBlockSensitive,
     EnableCheckbox,
     CertCheckbox,
+    Tuning(TuningField),
     SubmitButton,
 }
 
 impl FormField {
-    pub const ORDER: [FormField; 16] = [
+    pub const ORDER: [FormField; 20] = [
         FormField::SiteName,
         FormField::Domain,
         FormField::DomainAliases,
@@ -55,12 +56,16 @@ impl FormField {
         FormField::Target,
         FormField::ProxyFeatureStreaming,
         FormField::ProxyFeatureWebsocket,
-        FormField::ProxyFeatureLargeBody,
         FormField::ProxyFeatureCors,
-        FormField::ProxyFeatureLongTimeout,
         FormField::StaticMode,
         FormField::StaticFeatureCache,
         FormField::StaticFeatureBlockSensitive,
+        FormField::Tuning(TuningField::Http2),
+        FormField::Tuning(TuningField::Gzip),
+        FormField::Tuning(TuningField::BodySize),
+        FormField::Tuning(TuningField::ConnectTimeout),
+        FormField::Tuning(TuningField::SendTimeout),
+        FormField::Tuning(TuningField::ReadTimeout),
         FormField::EnableCheckbox,
         FormField::CertCheckbox,
         FormField::SubmitButton,
@@ -70,6 +75,7 @@ impl FormField {
 /// 新建站点表单状态
 #[derive(Debug, Default)]
 pub struct SiteFormState {
+    pub tuning: SiteTuning,
     pub site_name: String,
     pub domain: String,
     pub domain_aliases: String,
@@ -77,9 +83,7 @@ pub struct SiteFormState {
     pub target: String,
     pub feature_streaming: bool,
     pub feature_websocket: bool,
-    pub feature_large_body: bool,
     pub feature_cors: bool,
-    pub feature_long_timeout: bool,
     pub static_spa_mode: bool,
     pub static_cache: bool,
     pub static_block_sensitive: bool,
@@ -97,12 +101,12 @@ pub struct SiteFormState {
 impl SiteFormState {
     fn is_field_visible(&self, field: FormField) -> bool {
         match field {
+            FormField::Tuning(TuningField::Http2 | TuningField::Gzip) => true,
+            FormField::Tuning(_) => self.site_type != SiteTypeChoice::Static,
             FormField::Target => self.site_type != SiteTypeChoice::Static,
             FormField::ProxyFeatureStreaming
             | FormField::ProxyFeatureWebsocket
-            | FormField::ProxyFeatureLargeBody
-            | FormField::ProxyFeatureCors
-            | FormField::ProxyFeatureLongTimeout => self.site_type == SiteTypeChoice::Proxy,
+            | FormField::ProxyFeatureCors => self.site_type == SiteTypeChoice::Proxy,
             FormField::StaticMode
             | FormField::StaticFeatureCache
             | FormField::StaticFeatureBlockSensitive => self.site_type == SiteTypeChoice::Static,
@@ -195,6 +199,9 @@ impl SiteFormState {
             self.set_error("cert_checkbox", "申请证书需要先启用站点".into());
         }
 
+        for (field, error) in self.tuning.errors(self.site_type != SiteTypeChoice::Static) {
+            self.set_error(field, error);
+        }
         !self.has_errors()
     }
 
@@ -213,6 +220,7 @@ impl SiteFormState {
         let aliases_normalized = split_aliases(&aliases).join(" ");
 
         Some(crate::domain::site::CreateSiteInput {
+            tuning: self.tuning.clone(),
             name: self.site_name.trim().to_string(),
             domain: self.domain.trim().to_string(),
             domain_aliases: aliases_normalized,
@@ -230,17 +238,9 @@ impl SiteFormState {
             },
             feature_streaming: self.site_type == SiteTypeChoice::Proxy && self.feature_streaming,
             feature_websocket: self.site_type == SiteTypeChoice::Proxy && self.feature_websocket,
-            feature_large_body: match self.site_type {
-                SiteTypeChoice::Proxy => self.feature_large_body,
-                SiteTypeChoice::Emby => true,
-                SiteTypeChoice::Static => false,
-            },
+            feature_large_body: false,
             feature_cors: self.site_type == SiteTypeChoice::Proxy && self.feature_cors,
-            feature_long_timeout: match self.site_type {
-                SiteTypeChoice::Proxy => self.feature_long_timeout,
-                SiteTypeChoice::Emby => true,
-                SiteTypeChoice::Static => false,
-            },
+            feature_long_timeout: false,
             feature_spa_mode: self.site_type == SiteTypeChoice::Static && self.static_spa_mode,
             feature_static_cache: self.site_type == SiteTypeChoice::Static && self.static_cache,
             feature_block_sensitive: self.site_type == SiteTypeChoice::Static
@@ -258,4 +258,36 @@ pub(crate) fn split_aliases(input: &str) -> Vec<&str> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_errors_block_proxy_creation_but_hidden_values_do_not_block_static() {
+        let mut form = SiteFormState {
+            site_name: "app".into(),
+            domain: "example.com".into(),
+            target: "8080".into(),
+            tuning: SiteTuning {
+                body_size: "-1".into(),
+                read_timeout: "1M".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!form.validate());
+        assert!(form.field_errors.contains_key("body_size"));
+        assert!(form.field_errors.contains_key("read_timeout"));
+        form.site_type = SiteTypeChoice::Static;
+        assert!(form.validate());
+        form.focused = FormField::Tuning(TuningField::Gzip);
+        form.move_focus(1);
+        assert_eq!(form.focused, FormField::EnableCheckbox);
+        form.site_type = SiteTypeChoice::Emby;
+        form.focused = FormField::Tuning(TuningField::Gzip);
+        form.move_focus(1);
+        assert_eq!(form.focused, FormField::Tuning(TuningField::BodySize));
+    }
 }

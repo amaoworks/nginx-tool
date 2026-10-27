@@ -1,5 +1,6 @@
 //! minijinja 模板渲染器（include_str! 编译期内嵌），详见 architecture.md §12.1.1
 
+use super::site_tuning::{directives, GzipMode, Http2Support, SiteTuning};
 use minijinja::{Environment, Template};
 
 /// 编译期内嵌的三种站点模板
@@ -18,6 +19,8 @@ pub enum SiteKind {
 /// 模板渲染参数
 #[derive(Debug, Clone)]
 pub struct RenderParams {
+    pub tuning: SiteTuning,
+    pub http2_support: Http2Support,
     /// 站点名称（仅用于日志，不进入模板）
     pub site_name: String,
     /// server_name 指令内容（域名）
@@ -63,6 +66,8 @@ pub struct RenderParams {
 impl Default for RenderParams {
     fn default() -> Self {
         Self {
+            tuning: SiteTuning::default(),
+            http2_support: Http2Support::Unknown,
             site_name: String::new(),
             domain_name: String::new(),
             domain_aliases: String::new(),
@@ -100,6 +105,76 @@ fn make_env() -> Environment<'static> {
 
 /// 渲染指定类型的站点配置。失败时返回可展示的错误信息。
 pub fn render(kind: SiteKind, params: &RenderParams) -> Result<String, String> {
+    let tuning = params.tuning.normalized(kind != SiteKind::Static)?;
+    let (http2_listen, http2_directive) =
+        tuning.http2_directives(params.ssl_enabled, params.http2_support)?;
+    let mut body_size = tuning.body_size.trim_end_matches('b').to_string();
+    if body_size.is_empty() && params.feature_large_body && kind == SiteKind::Proxy {
+        body_size = "50m".into();
+    }
+    let mut connect_timeout = tuning.connect_timeout.clone();
+    let mut send_timeout = tuning.send_timeout.clone();
+    let mut read_timeout = tuning.read_timeout.clone();
+    if params.feature_long_timeout && kind == SiteKind::Proxy {
+        if connect_timeout.is_empty() {
+            connect_timeout = "60s".into();
+        }
+        if send_timeout.is_empty() {
+            send_timeout = "300s".into();
+        }
+    }
+    // Custom root-location timeouts take precedence over implicit streaming defaults.
+    let custom_read = directives(&params.custom_inside_location)
+        .iter()
+        .any(|d| d.scope.is_empty() && d.name == "proxy_read_timeout");
+    if read_timeout.is_empty() && !custom_read && kind == SiteKind::Proxy {
+        if params.feature_websocket || params.feature_streaming {
+            read_timeout = "86400s".into();
+        } else if params.feature_long_timeout {
+            read_timeout = "300s".into();
+        }
+    }
+    for (slot, content) in [
+        ("server", &params.custom_before_location),
+        ("server", &params.custom_after_location),
+        ("location", &params.custom_inside_location),
+    ] {
+        for d in directives(content).iter().filter(|d| d.scope.is_empty()) {
+            let conflict = match d.name.as_str() {
+                "http2" => {
+                    slot == "server"
+                        && params.ssl_enabled
+                        && tuning.http2 != super::site_tuning::Http2Mode::Inherit
+                }
+                "listen" => {
+                    slot == "server"
+                        && params.ssl_enabled
+                        && d.value.split_whitespace().any(|v| v == "http2")
+                        && tuning.http2 != super::site_tuning::Http2Mode::Inherit
+                }
+                "gzip" | "gzip_vary" | "gzip_min_length" | "gzip_types" | "gzip_comp_level" => {
+                    slot == "server" && tuning.gzip != GzipMode::Inherit
+                }
+                "client_max_body_size" => slot == "server" && !body_size.is_empty(),
+                "proxy_connect_timeout" => slot == "location" && !connect_timeout.is_empty(),
+                "proxy_send_timeout" => slot == "location" && !send_timeout.is_empty(),
+                "proxy_read_timeout" => slot == "location" && !read_timeout.is_empty(),
+                _ => false,
+            };
+            if conflict {
+                return Err(format!(
+                    "{} 已在自定义槽中设置；请移除槽内重复指令，或将表单对应设置留空/设为继承",
+                    d.name
+                ));
+            }
+        }
+    }
+    let tuning_json = serde_json::to_string(&tuning).map_err(|e| e.to_string())?;
+    let gzip_mode = match tuning.gzip {
+        GzipMode::Inherit => "inherit",
+        GzipMode::On => "on",
+        GzipMode::Off => "off",
+    };
     let env = make_env();
     let tpl_name = match kind {
         SiteKind::Proxy => "proxy",
@@ -112,6 +187,14 @@ pub fn render(kind: SiteKind, params: &RenderParams) -> Result<String, String> {
         .map_err(|e| format!("模板加载失败：{}", e))?;
 
     let ctx = minijinja::Value::from_iter([
+        ("tuning_json", tuning_json),
+        ("http2_listen", http2_listen.to_string()),
+        ("http2_directive", http2_directive.to_string()),
+        ("gzip_mode", gzip_mode.to_string()),
+        ("body_size", body_size),
+        ("connect_timeout", connect_timeout),
+        ("send_timeout", send_timeout),
+        ("read_timeout", read_timeout),
         ("site_name", params.site_name.clone()),
         ("domain_name", params.domain_name.clone()),
         ("domain_aliases", params.domain_aliases.clone()),
@@ -256,6 +339,196 @@ pub fn validate_domain(domain: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::template::site_tuning::{parse_tuning, Http2Mode};
+
+    #[test]
+    fn tuning_round_trip_and_https_upgrade_for_all_templates() -> Result<(), String> {
+        for kind in [SiteKind::Proxy, SiteKind::Emby, SiteKind::Static] {
+            let mut params = RenderParams {
+                site_name: "example".into(),
+                domain_name: "example.com".into(),
+                tuning: SiteTuning {
+                    gzip: GzipMode::On,
+                    body_size: "1024b".into(),
+                    connect_timeout: "500ms".into(),
+                    send_timeout: "5m".into(),
+                    read_timeout: "900".into(),
+                    ..Default::default()
+                },
+                http2_support: Http2Support::Modern,
+                ..Default::default()
+            };
+            let http = render(kind, &params)?;
+            assert!(!http.contains("http2 on;"));
+            params.tuning = parse_tuning(&http);
+            assert_eq!(params.tuning.http2, Http2Mode::Auto);
+            params.ssl_enabled = true;
+            params.ssl_cert_path = "/tmp/cert".into();
+            let https = render(kind, &params)?;
+            assert!(https.contains("http2 on;"));
+            assert!(https.contains("gzip on;"));
+            if kind == SiteKind::Static {
+                assert!(!https.contains("proxy_read_timeout"));
+                assert!(!https.contains("client_max_body_size"));
+            } else {
+                assert!(https.contains("client_max_body_size 1024;"));
+                assert!(https.contains("proxy_connect_timeout 500ms;"));
+                assert!(https.contains("proxy_send_timeout 5m;"));
+                assert!(https.contains("proxy_read_timeout 900s;"));
+            }
+            let reloaded = parse_tuning(&https);
+            assert_eq!(reloaded, params.tuning);
+            params.tuning = reloaded;
+            assert_eq!(render(kind, &params)?, https);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_timeout_overrides_streaming_but_empty_tracks_preset() -> Result<(), String> {
+        let mut params = RenderParams {
+            feature_streaming: true,
+            ..Default::default()
+        };
+        let content = render(SiteKind::Proxy, &params)?;
+        assert!(content.contains("proxy_read_timeout 86400s;"));
+        params.tuning = parse_tuning(&content);
+        assert!(params.tuning.read_timeout.is_empty());
+        params.feature_streaming = false;
+        assert!(!render(SiteKind::Proxy, &params)?.contains("proxy_read_timeout"));
+        params.feature_streaming = true;
+        params.tuning.read_timeout = "300".into();
+        let content = render(SiteKind::Proxy, &params)?;
+        assert!(content.contains("proxy_read_timeout 300s;"));
+        assert_eq!(content.matches("proxy_read_timeout").count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_feature_values_migrate_and_can_be_cleared() -> Result<(), String> {
+        let old = "server {\n# nginx-tools:features=large_body,long_timeout,\nclient_max_body_size 50m;\nlocation / { proxy_read_timeout 300s; proxy_send_timeout 300s; proxy_connect_timeout 60s; }\n}";
+        let mut params = RenderParams {
+            tuning: parse_tuning(old),
+            ..Default::default()
+        };
+        assert_eq!(params.tuning.body_size, "50m");
+        assert_eq!(params.tuning.read_timeout, "300s");
+        assert_eq!(params.tuning.http2, Http2Mode::Inherit);
+        params.tuning.body_size.clear();
+        params.tuning.read_timeout.clear();
+        let rendered = render(SiteKind::Proxy, &params)?;
+        assert!(!rendered.contains("client_max_body_size"));
+        assert!(!rendered.contains("proxy_read_timeout"));
+        assert!(rendered.contains("proxy_send_timeout 300s;"));
+        Ok(())
+    }
+
+    #[test]
+    fn custom_slots_are_preserved_and_duplicate_directives_are_rejected() -> Result<(), String> {
+        let mut params = RenderParams {
+            custom_before_location: "gzip on;".into(),
+            custom_inside_location: "proxy_read_timeout 7s;".into(),
+            feature_streaming: true,
+            ..Default::default()
+        };
+        let content = render(SiteKind::Proxy, &params)?;
+        assert_eq!(content.matches("proxy_read_timeout").count(), 1);
+        assert!(parse_tuning(&content).read_timeout.is_empty());
+        params.tuning.gzip = GzipMode::On;
+        assert!(render(SiteKind::Proxy, &params).is_err());
+        params.tuning.gzip = GzipMode::Inherit;
+        params.tuning.read_timeout = "10".into();
+        assert!(render(SiteKind::Proxy, &params).is_err());
+        params.custom_inside_location.clear();
+        params.custom_after_location = "location /other { proxy_read_timeout 7s; }".into();
+        assert!(render(SiteKind::Proxy, &params).is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local nginx and openssl; uses only temporary files"]
+    async fn generated_configs_pass_local_nginx_validation() -> anyhow::Result<()> {
+        use crate::infra::{executor::CommandExecutor, nginx::NginxAdapter};
+        use std::process::Command;
+        let temp = tempfile::tempdir()?;
+        let cert = temp.path().join("cert.pem");
+        let key = temp.path().join("key.pem");
+        let certificate = Command::new("openssl")
+            .args([
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "1",
+                "-subj",
+                "/CN=example.com",
+                "-keyout",
+            ])
+            .arg(&key)
+            .arg("-out")
+            .arg(&cert)
+            .output()?;
+        anyhow::ensure!(
+            certificate.status.success(),
+            "{}",
+            String::from_utf8_lossy(&certificate.stderr)
+        );
+        let nginx = NginxAdapter::new(CommandExecutor::new(
+            std::time::Duration::from_secs(3),
+            false,
+        ));
+        let support = nginx.refresh_http2_support().await;
+        anyhow::ensure!(
+            matches!(support, Http2Support::Legacy | Http2Support::Modern),
+            "HTTP/2 capability unavailable"
+        );
+        for kind in [SiteKind::Proxy, SiteKind::Emby, SiteKind::Static] {
+            let params = RenderParams {
+                site_name: "validation".into(),
+                domain_name: "example.com".into(),
+                static_root: temp.path().display().to_string(),
+                upstream_target: "127.0.0.1:8080".into(),
+                ssl_enabled: true,
+                ssl_cert_path: cert.display().to_string(),
+                ssl_key_path: key.display().to_string(),
+                http2_support: support,
+                tuning: SiteTuning {
+                    gzip: GzipMode::On,
+                    body_size: "1g".into(),
+                    connect_timeout: "500ms".into(),
+                    send_timeout: "5m".into(),
+                    read_timeout: "900".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let content = render(kind, &params).map_err(anyhow::Error::msg)?;
+            // Certbot support files and site logs are external to the directives under test.
+            let standalone = content
+                .lines()
+                .filter(|line| {
+                    !line.contains("/etc/letsencrypt/") && !line.contains("/var/log/nginx/")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let config = temp.path().join("nginx.conf");
+            std::fs::write(&config, format!("user root;\npid {0}/nginx.pid;\nerror_log stderr;\nevents {{}}\nhttp {{ access_log off; client_body_temp_path {0}/body; proxy_temp_path {0}/proxy; fastcgi_temp_path {0}/fastcgi; uwsgi_temp_path {0}/uwsgi; scgi_temp_path {0}/scgi;\n{1}\n}}", temp.path().display(), standalone))?;
+            let result = Command::new("nginx")
+                .args(["-t", "-e", "stderr", "-p"])
+                .arg(temp.path())
+                .arg("-c")
+                .arg(&config)
+                .output()?;
+            anyhow::ensure!(
+                result.status.success(),
+                "{kind:?}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn render_proxy_basic() {

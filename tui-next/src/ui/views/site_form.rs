@@ -3,12 +3,13 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::state::{AppState, FormField, SiteTypeChoice};
 use crate::ui::focus;
 use crate::ui::theme;
+use crate::ui::views::site_tuning::{self, FocusedLines};
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default().borders(Borders::NONE).title(Span::styled(
@@ -20,12 +21,15 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let form = &state.site_form;
     let mut lines: Vec<Line> = Vec::new();
-    let mut focused_line = 0usize;
+    let mut focused_lines = FocusedLines { start: 0, end: 1 };
 
     // 站点名称
     let name_focused = form.focused == FormField::SiteName;
     if name_focused {
-        focused_line = lines.len();
+        focused_lines = FocusedLines {
+            start: lines.len(),
+            end: lines.len() + 2,
+        };
     }
     let name_error = form.get_error("site_name");
     lines.push(field_label("站点名称:", name_focused));
@@ -46,7 +50,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // 域名
     let domain_focused = form.focused == FormField::Domain;
     if domain_focused {
-        focused_line = lines.len();
+        focused_lines = FocusedLines {
+            start: lines.len(),
+            end: lines.len() + 2,
+        };
     }
     let domain_error = form.get_error("domain");
     lines.push(field_label("域    名:", domain_focused));
@@ -67,7 +74,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // 附加域名
     let aliases_focused = form.focused == FormField::DomainAliases;
     if aliases_focused {
-        focused_line = lines.len();
+        focused_lines = FocusedLines {
+            start: lines.len(),
+            end: lines.len() + 2,
+        };
     }
     let aliases_error = form.get_error("domain_aliases");
     lines.push(field_label("附加域名:", aliases_focused));
@@ -95,7 +105,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     for kind in SiteTypeChoice::ALL.iter() {
         let is_selected = *kind == form.site_type;
         if type_focused && is_selected {
-            focused_line = lines.len();
+            focused_lines = FocusedLines {
+                start: lines.len(),
+                end: lines.len() + 1,
+            };
         }
         let radio = if is_selected { "◉" } else { "○" };
         let style = if type_focused && is_selected {
@@ -119,7 +132,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     if form.site_type != SiteTypeChoice::Static {
         let target_focused = form.focused == FormField::Target;
         if target_focused {
-            focused_line = lines.len();
+            focused_lines = FocusedLines {
+                start: lines.len(),
+                end: lines.len() + 2,
+            };
         }
         let target_error = form.get_error("target");
         lines.push(field_label("代理目标:", target_focused));
@@ -149,7 +165,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     )));
     if form.site_type == SiteTypeChoice::Proxy {
         if form.focused == FormField::ProxyFeatureStreaming {
-            focused_line = lines.len();
+            focused_lines = one_line_focus(lines.len());
         }
         lines.push(toggle_line(
             "流式响应 / AI API",
@@ -157,46 +173,30 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
             form.focused == FormField::ProxyFeatureStreaming,
         ));
         if form.focused == FormField::ProxyFeatureWebsocket {
-            focused_line = lines.len();
+            focused_lines = one_line_focus(lines.len());
         }
         lines.push(toggle_line(
             "WebSocket",
             form.feature_websocket,
             form.focused == FormField::ProxyFeatureWebsocket,
         ));
-        if form.focused == FormField::ProxyFeatureLargeBody {
-            focused_line = lines.len();
-        }
-        lines.push(toggle_line(
-            "大请求体 / 上传",
-            form.feature_large_body,
-            form.focused == FormField::ProxyFeatureLargeBody,
-        ));
         if form.focused == FormField::ProxyFeatureCors {
-            focused_line = lines.len();
+            focused_lines = one_line_focus(lines.len());
         }
         lines.push(toggle_line(
             "浏览器跨域 CORS",
             form.feature_cors,
             form.focused == FormField::ProxyFeatureCors,
         ));
-        if form.focused == FormField::ProxyFeatureLongTimeout {
-            focused_line = lines.len();
-        }
-        lines.push(toggle_line(
-            "长超时后端",
-            form.feature_long_timeout,
-            form.focused == FormField::ProxyFeatureLongTimeout,
-        ));
     } else if form.site_type == SiteTypeChoice::Static {
         let mode_focused = form.focused == FormField::StaticMode;
         if mode_focused {
-            focused_line = lines.len() + 1;
+            focused_lines = one_line_focus(lines.len() + 1);
         }
         lines.push(field_label("站点模式:", mode_focused));
         lines.push(static_mode_line(form.static_spa_mode, mode_focused));
         if form.focused == FormField::StaticFeatureCache {
-            focused_line = lines.len();
+            focused_lines = one_line_focus(lines.len());
         }
         lines.push(toggle_line(
             "静态资源缓存",
@@ -204,7 +204,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
             form.focused == FormField::StaticFeatureCache,
         ));
         if form.focused == FormField::StaticFeatureBlockSensitive {
-            focused_line = lines.len();
+            focused_lines = one_line_focus(lines.len());
         }
         lines.push(toggle_line(
             "敏感路径保护",
@@ -219,6 +219,22 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
     lines.push(Line::from(""));
 
+    let tuning_focus = match form.focused {
+        FormField::Tuning(field) => Some(field),
+        _ => None,
+    };
+    if let Some(range) = site_tuning::append_tuning_fields(
+        &mut lines,
+        &form.tuning,
+        form.site_type != SiteTypeChoice::Static,
+        state.ctx.nginx.http2_support(),
+        false,
+        tuning_focus,
+        &form.field_errors,
+    ) {
+        focused_lines = range;
+    }
+
     // 创建后操作
     let enable_focused = form.focused == FormField::EnableCheckbox;
     let cert_focused = form.focused == FormField::CertCheckbox;
@@ -230,7 +246,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // 立即启用复选框
     let enable_marker = if form.enable_now { "[✕]" } else { "[ ]" };
     if enable_focused {
-        focused_line = lines.len();
+        focused_lines = one_line_focus(lines.len());
     }
     let enable_style = if enable_focused {
         Style::default()
@@ -248,7 +264,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let cert_marker = if form.request_cert { "[✕]" } else { "[ ]" };
     let cert_enabled = form.enable_now;
     if cert_focused {
-        focused_line = lines.len();
+        focused_lines = one_line_focus(lines.len());
     }
     let cert_style = if cert_focused && cert_enabled {
         Style::default()
@@ -277,7 +293,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     // 提交按钮
     let submit_focused = form.focused == FormField::SubmitButton;
     if submit_focused {
-        focused_line = lines.len();
+        focused_lines = one_line_focus(lines.len());
     }
     let btn_label = if form.submitting {
         "创建中…"
@@ -290,21 +306,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         Span::styled(focus::button_label(btn_label), btn_style),
     ]));
 
-    let scroll_offset = compute_scroll_offset(lines.len(), inner.height as usize, focused_line);
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll_offset as u16, 0));
+    let scroll_offset =
+        site_tuning::scroll_offset(&lines, inner.width, inner.height, focused_lines);
+    let p = Paragraph::new(site_tuning::wrap_lines(&lines, inner.width)).scroll((scroll_offset, 0));
     frame.render_widget(p, inner);
 }
 
-fn compute_scroll_offset(total_lines: usize, visible_lines: usize, focused_line: usize) -> usize {
-    if total_lines <= visible_lines {
-        return 0;
+fn one_line_focus(line: usize) -> FocusedLines {
+    FocusedLines {
+        start: line,
+        end: line + 1,
     }
-
-    focused_line
-        .saturating_sub(visible_lines / 2)
-        .min(total_lines.saturating_sub(visible_lines))
 }
 
 fn field_label<'a>(label: &str, focused: bool) -> Line<'a> {
@@ -388,24 +400,4 @@ fn static_mode_line<'a>(spa_mode: bool, focused: bool) -> Line<'a> {
         Span::styled(if spa_mode { "   ◉ " } else { "   ○ " }, spa_style),
         Span::styled("SPA 单页", spa_style),
     ])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::compute_scroll_offset;
-
-    #[test]
-    fn no_scroll_when_content_fits() {
-        assert_eq!(compute_scroll_offset(10, 12, 9), 0);
-    }
-
-    #[test]
-    fn scroll_centers_around_focus_when_possible() {
-        assert_eq!(compute_scroll_offset(30, 10, 15), 10);
-    }
-
-    #[test]
-    fn scroll_clamps_to_bottom_when_focus_is_near_end() {
-        assert_eq!(compute_scroll_offset(30, 10, 29), 20);
-    }
 }

@@ -1,8 +1,6 @@
 //! AppState logs 相关按键与动作处理。
 
-use crate::app::state::app::{
-    AppState, LOGS_HORIZONTAL_SCROLL_STEP, LOGS_PAGE_SCROLL_FACTOR,
-};
+use crate::app::state::app::{AppState, LOGS_HORIZONTAL_SCROLL_STEP, LOGS_PAGE_SCROLL_FACTOR};
 use crate::app::state::common::FocusArea;
 use crate::app::state::logs::LogsFocus;
 use crate::domain::log::{LogKind, LogPaths, LogSource};

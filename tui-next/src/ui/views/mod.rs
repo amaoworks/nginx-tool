@@ -8,4 +8,5 @@ pub mod site_edit_advanced;
 pub mod site_edit_raw;
 pub mod site_edit_slot_full;
 pub mod site_form;
+pub mod site_tuning;
 pub mod sites;

@@ -1,12 +1,25 @@
 server {
+    # nginx-tools:tuning={{ tuning_json | safe }}
     server_name {{ domain_name }}{% if domain_aliases %} {{ domain_aliases }}{% endif %};
     # nginx-tools:managed type=proxy
     # nginx-tools:features={% if feature_streaming == "true" %}streaming,{% endif %}{% if feature_websocket == "true" %}websocket,{% endif %}{% if feature_large_body == "true" %}large_body,{% endif %}{% if feature_cors == "true" %}cors,{% endif %}{% if feature_long_timeout == "true" %}long_timeout,{% endif %}
 
     access_log /var/log/nginx/{{ site_name }}.access.log;
     error_log /var/log/nginx/{{ site_name }}.error.log;
-{% if feature_large_body == "true" %}
-    client_max_body_size 50m;
+
+
+{% if gzip_mode == "on" %}
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml image/svg+xml;
+    gzip_comp_level 6;
+{% elif gzip_mode == "off" %}
+    gzip off;
+{% endif %}
+
+{% if body_size %}
+    client_max_body_size {{ body_size }};
 {% endif %}
 
     # nginx-tools:custom-before-location:start
@@ -31,19 +44,19 @@ server {
         proxy_cache off;
         add_header X-Accel-Buffering "no";
 {% endif %}
-{% if feature_websocket == "true" or feature_streaming == "true" %}
-        proxy_read_timeout 86400;
-{% elif feature_long_timeout == "true" %}
-        proxy_read_timeout 300s;
-{% endif %}
-{% if feature_long_timeout == "true" %}
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 300s;
-{% endif %}
 {% if feature_cors == "true" %}
         add_header Access-Control-Allow-Origin *;
         add_header Access-Control-Allow-Methods "GET, POST, OPTIONS";
         add_header Access-Control-Allow-Headers "Origin, Content-Type, Accept";
+{% endif %}
+{% if connect_timeout %}
+        proxy_connect_timeout {{ connect_timeout }};
+{% endif %}
+{% if send_timeout %}
+        proxy_send_timeout {{ send_timeout }};
+{% endif %}
+{% if read_timeout %}
+        proxy_read_timeout {{ read_timeout }};
 {% endif %}
         # nginx-tools:custom-inside-location:start
         {{ custom_inside_location | safe }}
@@ -55,7 +68,10 @@ server {
     # nginx-tools:custom-after-location:end
 {% if ssl_enabled == "true" %}
 
-    listen 443 ssl;
+    listen 443 ssl{{ http2_listen }};
+{% if http2_directive %}
+    {{ http2_directive }}
+{% endif %}
     ssl_certificate {{ ssl_cert_path }};
     ssl_certificate_key {{ ssl_key_path }};
     include /etc/letsencrypt/options-ssl-nginx.conf;

@@ -56,6 +56,7 @@ impl InjectionSlot {
 /// 编辑器解析结果
 #[derive(Debug, Clone)]
 pub struct ParsedForEdit {
+    pub tuning: super::site_tuning::SiteTuning,
     /// 原始配置内容
     pub raw_content: String,
     /// 站点类型
@@ -110,6 +111,7 @@ pub fn parse_for_edit(content: &str) -> ParsedForEdit {
     let (ssl_cert_path, ssl_key_path) = extract_ssl_certificate_paths(content);
 
     ParsedForEdit {
+        tuning: super::site_tuning::parse_tuning(content),
         raw_content: content.to_string(),
         site_type,
         domains: parsed.server_names,

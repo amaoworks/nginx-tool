@@ -518,6 +518,7 @@ fn log_audit(
 /// 新建站点输入参数
 #[derive(Debug, Clone)]
 pub struct CreateSiteInput {
+    pub tuning: crate::template::site_tuning::SiteTuning,
     pub name: String,
     pub domain: String,
     pub domain_aliases: String,
@@ -568,8 +569,11 @@ fn cert_paths_for_name(cert_name: &str) -> (String, String) {
 fn render_create_site_config(
     input: &CreateSiteInput,
     ssl: Option<(&str, &str)>,
+    http2_support: crate::template::site_tuning::Http2Support,
 ) -> Result<String, NgToolError> {
     let params = crate::template::renderer::RenderParams {
+        tuning: input.tuning.clone(),
+        http2_support,
         site_name: input.name.clone(),
         domain_name: input.domain.clone(),
         domain_aliases: input.domain_aliases.clone(),
@@ -605,7 +609,15 @@ pub async fn create_site(
     let link_path = ctx.probe.sites_enabled.join(&conf_name);
 
     // 渲染模板
-    let content = render_create_site_config(&input, None)?;
+    let http2_support = ctx.nginx.refresh_http2_support().await;
+    input
+        .tuning
+        .http2_directives(input.request_cert, http2_support)
+        .map_err(|message| NgToolError::InvalidInput {
+            field: "http2".into(),
+            message,
+        })?;
+    let content = render_create_site_config(&input, None, http2_support)?;
 
     // 写入：tmp 文件落在 sites-available 同目录（保证 hard_link 在同一文件系统）
     // 用 O_CREAT|O_EXCL 创建 tmp（防 tmp race），用 hard_link 替代 rename 做 race-safe 创建：
@@ -747,6 +759,7 @@ pub async fn create_site(
         cert_requested = true;
         let cert_domains = cert_domains_for_input(&input);
         // 与证书页共用一条路径：能复用就写回，否则扩展或新签，成功后才改 Nginx。
+        // 写回时从当前配置解析 HTTP/2、Gzip 与超时，避免证书步骤丢掉这些设置。
         if let Err(e) =
             crate::domain::cert::request_cert(ctx.clone(), &input.name, &cert_domains).await
         {
@@ -844,6 +857,8 @@ pub async fn apply_cert_to_site_config(
     let feature_enabled = |name: &str| parsed.managed_features.iter().any(|item| item == name);
     let (cert_path, key_path) = cert_paths_for_name(cert_name);
     let params = crate::template::renderer::RenderParams {
+        tuning: parsed.tuning.clone(),
+        http2_support: ctx.nginx.refresh_http2_support().await,
         site_name: site_name.to_string(),
         domain_name: parsed.domains.first().cloned().unwrap_or_default(),
         domain_aliases: parsed
@@ -859,11 +874,9 @@ pub async fn apply_cert_to_site_config(
         feature_streaming: site_type == SiteType::Proxy && feature_enabled("streaming"),
         feature_websocket: (site_type == SiteType::Proxy && feature_enabled("websocket"))
             || site_type == SiteType::Emby,
-        feature_large_body: (site_type == SiteType::Proxy && feature_enabled("large_body"))
-            || site_type == SiteType::Emby,
+        feature_large_body: false,
         feature_cors: site_type == SiteType::Proxy && feature_enabled("cors"),
-        feature_long_timeout: (site_type == SiteType::Proxy && feature_enabled("long_timeout"))
-            || site_type == SiteType::Emby,
+        feature_long_timeout: false,
         feature_spa_mode: site_type == SiteType::Static && feature_enabled("spa_mode"),
         feature_static_cache: site_type == SiteType::Static && feature_enabled("static_cache"),
         feature_block_sensitive: site_type == SiteType::Static
@@ -1268,6 +1281,7 @@ Certificate Name: api
     #[test]
     fn cert_domains_include_aliases() {
         let input = CreateSiteInput {
+            tuning: Default::default(),
             name: "app".into(),
             domain: "app.example.com".into(),
             domain_aliases: "www.app.example.com, m.app.example.com".into(),

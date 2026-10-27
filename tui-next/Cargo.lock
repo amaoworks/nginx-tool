@@ -1074,7 +1074,7 @@ dependencies = [
 
 [[package]]
 name = "ngtool"
-version = "1.2.9"
+version = "1.2.10"
 dependencies = [
  "anyhow",
  "chrono",

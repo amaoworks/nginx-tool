@@ -1,11 +1,11 @@
 //! 应用状态：按页面拆分子状态，AppState 聚合事件与按键处理。
 
 mod app;
-mod handlers;
 mod backup;
 mod certs;
 mod common;
 mod dashboard;
+mod handlers;
 mod logs;
 mod service;
 mod site_edit;
@@ -333,6 +333,25 @@ server {
     }
 
     #[test]
+    fn tuning_reset_and_saved_raw_changes_are_kept() {
+        let mut state = SiteEditState::default();
+        state.tuning.body_size = "50m".into();
+        state.seal_original();
+        state.tuning.body_size = "1g".into();
+        assert!(state.restore_original());
+        assert_eq!(state.tuning.body_size, "50m");
+        state.mark_saved(
+            "server { client_max_body_size 2g; location / { proxy_read_timeout 90s; } }",
+            None,
+        );
+        assert_eq!(state.tuning.body_size, "2g");
+        assert_eq!(state.tuning.read_timeout, "90s");
+        state.tuning.body_size.clear();
+        assert!(state.restore_original());
+        assert_eq!(state.tuning.body_size, "2g");
+    }
+
+    #[test]
     fn raw_undo_redo_round_trip() {
         let mut s = SiteEditState::default();
         s.raw_lines = vec!["abc".into()];
@@ -549,4 +568,3 @@ server {
         assert_eq!(logs.max_vertical_scroll(visible_lines), 16);
     }
 }
-
